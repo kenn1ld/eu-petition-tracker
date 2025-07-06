@@ -63,9 +63,9 @@ function processChartData() {
     const timeGroups: Record<string, { changes: number[], totalSignatures: number }> = {};
     
     historicalData.forEach(row => {
-        // Convert to CEST (UTC+2)
-        const utcDate = new Date(row.timestamp);
-        const cestDate = new Date(utcDate.getTime() + (2 * 60 * 60 * 1000)); // Add 2 hours for CEST
+        // Use CEST timezone directly without manual offset
+        const date = new Date(row.timestamp);
+        const cestDate = new Date(date.toLocaleString("en-US", {timeZone: "Europe/Oslo"}));
         
         const hour = cestDate.getHours();
         const day = cestDate.getDate();
@@ -117,8 +117,8 @@ function calculateStats() {
     
     // Calculate today's signatures using CEST
     const todayData = historicalData.filter(row => {
-        const utcDate = new Date(row.timestamp);
-        const cestDate = new Date(utcDate.getTime() + (2 * 60 * 60 * 1000));
+        const date = new Date(row.timestamp);
+        const cestDate = new Date(date.toLocaleString("en-US", {timeZone: "Europe/Oslo"}));
         return cestDate.getTime() > dayAgo;
     });
     
@@ -131,8 +131,8 @@ function calculateStats() {
     // Find peak hour from recent data using CEST
     const hourlyData: Record<number, number> = {};
     todayData.forEach(row => {
-        const utcDate = new Date(row.timestamp);
-        const cestDate = new Date(utcDate.getTime() + (2 * 60 * 60 * 1000));
+        const date = new Date(row.timestamp);
+        const cestDate = new Date(date.toLocaleString("en-US", {timeZone: "Europe/Oslo"}));
         const hour = cestDate.getHours();
         hourlyData[hour] = (hourlyData[hour] || 0) + row.change_amount;
     });
@@ -519,7 +519,7 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
                 </span>
                 {#if lastUpdated}
                     <span class="text-sm">
-                        Last updated: {new Date(lastUpdated.getTime() + (2 * 60 * 60 * 1000)).toLocaleTimeString('en-US', { timeZone: 'Europe/Oslo' })} CEST
+                        Last updated: {lastUpdated.toLocaleTimeString('en-US', { timeZone: 'Europe/Oslo' })} CEST
                     </span>
                 {/if}
             </div>
@@ -623,7 +623,7 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
                     {#each historicalData.slice(-15).reverse() as entry}
                         <div class="glass rounded-xl p-4 grid grid-cols-1 md:grid-cols-3 gap-2 md:gap-4 items-center hover:bg-white/10 transition-colors">
                             <span class="text-sm text-slate-400 font-mono">
-                                {new Date(new Date(entry.timestamp).getTime() + (2 * 60 * 60 * 1000)).toLocaleString('en-US', { timeZone: 'Europe/Oslo' })} CEST
+                                {new Date(entry.timestamp).toLocaleString('en-US', { timeZone: 'Europe/Oslo' })} CEST
                             </span>
                             <span class="font-semibold text-green-400">
                                 +{entry.change_amount.toLocaleString()} signatures
