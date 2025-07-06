@@ -140,20 +140,38 @@ function processChartData(): void {
 function calculateStats(): void {
     if (historicalData.length === 0) return;
     
-    const dayAgo = Date.now() - (24 * 60 * 60 * 1000);
-    const todayData = historicalData.filter(row => 
-        toCEST(new Date(row.timestamp)).getTime() > dayAgo
-    );
+    const now = Date.now();
+    const dayAgo = now - (24 * 60 * 60 * 1000);
     
-    const totalChanges = todayData.reduce((sum, row) => sum + row.change_amount, 0);
-    stats.avgPerHour = Math.round(totalChanges / 24);
+    // Calculate today's signatures using CEST - get data from last 24 hours
+    const todayData = historicalData.filter(row => {
+        const utcDate = new Date(row.timestamp);
+        return utcDate.getTime() > dayAgo;
+    });
+    
+    // Calculate total change amount for today (sum of all positive changes)
+    const totalChanges = todayData.reduce((sum, row) => {
+        // Only count positive changes (new signatures)
+        return sum + Math.max(0, row.change_amount);
+    }, 0);
+    
+    // Calculate actual hours of data we have
+    const actualHours = todayData.length > 0 ? 
+        Math.max(1, (now - new Date(todayData[0].timestamp).getTime()) / (1000 * 60 * 60)) : 1;
+    
+    // Calculate hourly rate based on actual time period
+    stats.avgPerHour = totalChanges > 0 ? Math.round(totalChanges / actualHours) : 0;
     stats.totalToday = totalChanges;
     
-    // Find peak hour
+    // Find peak hour from recent data using CEST
     const hourlyData: Record<number, number> = {};
     todayData.forEach(row => {
-        const hour = toCEST(new Date(row.timestamp)).getHours();
-        hourlyData[hour] = (hourlyData[hour] || 0) + row.change_amount;
+        const cestDate = toCEST(new Date(row.timestamp));
+        const hour = cestDate.getHours();
+        // Only count positive changes for peak hour calculation
+        if (row.change_amount > 0) {
+            hourlyData[hour] = (hourlyData[hour] || 0) + row.change_amount;
+        }
     });
     
     let peakHour = 0;
@@ -166,13 +184,20 @@ function calculateStats(): void {
     });
     stats.peakHour = peakHour;
     
-    // Estimate time to goal
+    // Estimate time to goal - use a better average based on recent activity
     if (liveData && stats.avgPerHour > 0) {
         const remaining = liveData.goal - liveData.signatureCount;
         const hoursToGoal = remaining / stats.avgPerHour;
-        stats.timeToGoal = hoursToGoal < 24 
-            ? `${Math.round(hoursToGoal)} hours`
-            : `${Math.round(hoursToGoal / 24)} days`;
+        
+        if (hoursToGoal < 1) {
+            stats.timeToGoal = `${Math.round(hoursToGoal * 60)} minutes`;
+        } else if (hoursToGoal < 24) {
+            stats.timeToGoal = `${Math.round(hoursToGoal)} hours`;
+        } else {
+            stats.timeToGoal = `${Math.round(hoursToGoal / 24)} days`;
+        }
+    } else {
+        stats.timeToGoal = 'Calculating...';
     }
 }
 
@@ -321,23 +346,27 @@ function setupEventSource(): void {
     
     eventSource.onmessage = (event) => {
         const message = JSON.parse(event.data);
-        if (!message.data) return;
+        if (!message.data || message.type === 'heartbeat') return;
         
         console.log('📨 Received live update!');
+        const oldLiveData = liveData;
         liveData = message.data;
         lastUpdated = new Date(message.timestamp);
         
         const lastEntry = historicalData[historicalData.length - 1];
         const hasNewSignatures = message.data.signatureCount !== lastEntry?.signature_count;
         
+        // Always update historical data when signature count changes
         if (hasNewSignatures) {
+            const changeAmount = lastEntry 
+                ? message.data.signatureCount - lastEntry.signature_count 
+                : 0;
+                
             const newEntry: HistoricalEntry = {
                 timestamp: new Date().toISOString(),
                 signature_count: message.data.signatureCount,
                 goal: message.data.goal,
-                change_amount: lastEntry 
-                    ? message.data.signatureCount - lastEntry.signature_count 
-                    : 0
+                change_amount: changeAmount
             };
             
             historicalData.push(newEntry);
@@ -346,11 +375,15 @@ function setupEventSource(): void {
             }
             
             processChartData();
+            console.log(`📊 Added new entry: +${changeAmount} signatures (Total: ${message.data.signatureCount})`);
         }
         
-        // Always update stats and charts when new live data arrives
+        // Always recalculate stats and update charts when live data changes
         calculateStats();
         updateCharts();
+        
+        // Force reactive updates
+        liveData = { ...liveData };
     };
     
     eventSource.onerror = () => {
