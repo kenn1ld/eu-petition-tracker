@@ -1,10 +1,8 @@
 // src/lib/datamonitor.ts
 import { supabase, hasValidSupabase } from './supabase.js';
+import { GOAL_OVERRIDE, applyGoalOverride } from './config.js';
 
 const EU_API = "https://eci.ec.europa.eu/045/public/api/report/progression";
-
-// 🎯 MANUAL GOAL OVERRIDE - Change this value to update the goal
-const MANUAL_GOAL_OVERRIDE = 1500000;
 
 let cachedData: any = null;
 let lastSignatureCount: number | null = null;
@@ -80,13 +78,10 @@ async function checkForChanges() {
         const response = await fetch(EU_API);
         const rawData = await response.json();
         
-        // 🎯 Override the goal with our manual value
-        const data = {
-            ...rawData,
-            goal: MANUAL_GOAL_OVERRIDE
-        };
+        // 🎯 Apply goal override using the config
+        const data = applyGoalOverride(rawData);
         
-        console.log(`🎯 Goal overridden: ${rawData.goal || 'undefined'} → ${MANUAL_GOAL_OVERRIDE}`);
+        console.log(`🎯 Goal overridden: ${rawData.goal || 'undefined'} → ${GOAL_OVERRIDE}`);
         
         if (data.signatureCount === lastSignatureCount) {
             console.log(`No change: ${data.signatureCount} signatures (${subscriberManager.count} subscribers)`);
@@ -117,7 +112,7 @@ export function startMonitoring(intervalMs = 1000) {
     if (monitorInterval) return;
     
     console.log(`🚀 Starting monitoring every ${intervalMs/1000} seconds...`);
-    console.log(`🎯 Goal manually set to: ${MANUAL_GOAL_OVERRIDE.toLocaleString()}`);
+    console.log(`🎯 Goal manually set to: ${GOAL_OVERRIDE.toLocaleString()}`);
     
     checkForChanges();
     monitorInterval = setInterval(checkForChanges, intervalMs);
