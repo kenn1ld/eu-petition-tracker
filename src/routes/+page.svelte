@@ -238,9 +238,9 @@ function createDoughnutChart(): void {
     const ctx = doughnutChartCanvas.getContext('2d');
     if (!ctx) return;
     
-    const progressPercentage = stats.currentSignatures && stats.goal 
-        ? (stats.currentSignatures / stats.goal) * 100 
-        : (liveData ? (liveData.signatureCount / liveData.goal) * 100 : 0);
+    const progressPercentage = currentSignatureCount && currentGoal 
+        ? (currentSignatureCount / currentGoal) * 100 
+        : 0;
     
     doughnutChart = new Chart(ctx, {
         type: 'doughnut',
@@ -286,9 +286,9 @@ function updateLineChart(): void {
 function updateDoughnutChart(): void {
     if (!doughnutChart) return;
     
-    const progressPercentage = stats.currentSignatures && stats.goal 
-        ? (stats.currentSignatures / stats.goal) * 100 
-        : (liveData ? (liveData.signatureCount / liveData.goal) * 100 : 0);
+    const progressPercentage = currentSignatureCount && currentGoal 
+        ? (currentSignatureCount / currentGoal) * 100 
+        : 0;
         
     doughnutChart.data.datasets[0].data = [progressPercentage, 100 - progressPercentage];
     doughnutChart.update('none');
@@ -307,7 +307,7 @@ function updateCharts(): void {
     }
     
     // Create or update doughnut chart
-    if (stats.currentSignatures || liveData) {
+    if (currentSignatureCount > 0) {
         if (!doughnutChart) {
             createDoughnutChart();
         } else {
@@ -330,7 +330,6 @@ function setupEventSource(): void {
         if (!message.data || message.type === 'heartbeat') return;
         
         console.log('📨 Received live update!');
-        const oldLiveData = liveData;
         liveData = message.data;
         lastUpdated = new Date(message.timestamp);
         
@@ -359,14 +358,25 @@ function setupEventSource(): void {
             processChartData();
             console.log(`📊 Added new entry: +${changeAmount} signatures (Total: ${message.data.signatureCount})`);
             
-            // Fetch fresh stats from server when signatures change
+            // Immediately update stats from live data for instant feedback
+            stats.currentSignatures = message.data.signatureCount;
+            stats.goal = message.data.goal;
+            
+            // Then fetch fresh calculated stats from server
             await fetchStats();
+        }
+        
+        // Always ensure we have the latest signature count
+        if (message.data.signatureCount) {
+            stats.currentSignatures = message.data.signatureCount;
+            stats.goal = message.data.goal;
         }
         
         // Update charts
         updateCharts();
         
         // Force reactive updates
+        stats = { ...stats };
         liveData = { ...liveData };
     };
     
@@ -414,9 +424,11 @@ onDestroy(() => {
     doughnutChart?.destroy();
 });
 
-// Reactive values - now use server-calculated stats
-$: progressPercentage = stats.currentSignatures && stats.goal ? (stats.currentSignatures / stats.goal) * 100 : 0;
-$: remainingSignatures = stats.currentSignatures && stats.goal ? stats.goal - stats.currentSignatures : 0;
+// Reactive values - prioritize live data over stats for immediate updates
+$: currentSignatureCount = liveData?.signatureCount || stats.currentSignatures || 0;
+$: currentGoal = liveData?.goal || stats.goal || 1500000;
+$: progressPercentage = currentSignatureCount && currentGoal ? (currentSignatureCount / currentGoal) * 100 : 0;
+$: remainingSignatures = currentSignatureCount && currentGoal ? currentGoal - currentSignatureCount : 0;
 </script>
 
 <svelte:head>
@@ -551,16 +563,16 @@ $: remainingSignatures = stats.currentSignatures && stats.goal ? stats.goal - st
         </header>
 
         <!-- Live Data Section -->
-        {#if stats.currentSignatures || liveData}
+        {#if currentSignatureCount > 0}
             <section class="glass rounded-3xl p-8 md:p-12 text-center mb-12 relative overflow-hidden animate-fadeInUp-delay-1">
                 <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/40 to-transparent"></div>
                 
                 <div class="mb-8">
                     <h2 class="text-5xl md:text-7xl font-black mb-2 text-white tracking-tight">
-                        {stats.currentSignatures ? stats.currentSignatures.toLocaleString() : liveData?.signatureCount.toLocaleString()}
+                        {currentSignatureCount.toLocaleString()}
                     </h2>
                     <p class="text-xl text-slate-300">
-                        of {stats.goal ? stats.goal.toLocaleString() : liveData?.goal.toLocaleString()} signatures
+                        of {currentGoal.toLocaleString()} signatures
                     </p>
                 </div>
                 
