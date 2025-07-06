@@ -95,7 +95,7 @@ onMount(() => {
     fetchHistoricalData();
     
     // Set up real-time connection for live updates
-    eventSource = new EventSource('/api/live-data');
+    eventSource = new EventSource('/api/data');
     
     eventSource.onopen = () => {
         connectionStatus = '🟢 Live';
