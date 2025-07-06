@@ -49,41 +49,10 @@ async function fetchHistoricalData() {
         }
     } catch (error) {
         console.error('Failed to fetch historical data:', error);
-        // Simulate data for demo
-        simulateData();
     }
 }
 
-function simulateData() {
-    // Generate demo data for showcase
-    const now = new Date();
-    historicalData = [];
-    let signatureCount = 850000;
-    
-    for (let i = 24; i >= 0; i--) {
-        const timestamp = new Date(now.getTime() - (i * 60 * 60 * 1000));
-        const change = Math.floor(Math.random() * 5000) + 1000;
-        signatureCount += change;
-        
-        historicalData.push({
-            timestamp: timestamp.toISOString(),
-            signature_count: signatureCount,
-            change_amount: change
-        });
-    }
-    
-    if (!liveData) {
-        liveData = {
-            signatureCount: signatureCount,
-            goal: 1000000
-        };
-        lastUpdated = new Date();
-    }
-    
-    processChartData();
-    calculateStats();
-    updateCharts();
-}
+
 
 function processChartData() {
     // Group data by hour for chart
@@ -282,20 +251,6 @@ function updateDoughnutChart() {
     });
 }
 
-async function fetchManualData() {
-    try {
-        const response = await fetch('/api/current');
-        const result = await response.json();
-        liveData = result.data;
-        lastUpdated = new Date(result.timestamp);
-        updateCharts();
-        console.log('🔄 Manual refresh completed with goal:', result.data?.goal);
-    } catch (error) {
-        console.error('Failed to fetch manual data:', error);
-        simulateData();
-    }
-}
-
 onMount(() => {
     let refreshInterval: ReturnType<typeof setInterval>;
 
@@ -335,8 +290,6 @@ onMount(() => {
             };
         } catch (error) {
             console.error('EventSource not available:', error);
-            connectionStatus = '🟡 Demo Mode';
-            simulateData();
         }
 
         // Refresh historical data every 5 minutes
@@ -588,21 +541,5 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
                 </div>
             </section>
         {/if}
-
-        <!-- Manual Controls -->
-        <section class="flex flex-col md:flex-row gap-4 justify-center items-center animate-fadeInUp-delay-4">
-            <button 
-                on:click={fetchManualData} 
-                class="w-full md:w-auto px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-semibold rounded-xl transition-all duration-300 transform hover:scale-105 hover:shadow-lg border border-white/10"
-            >
-                🔄 Manual Refresh
-            </button>
-            <button 
-                on:click={fetchHistoricalData} 
-                class="w-full md:w-auto px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 text-white font-semibold rounded-xl transition-all duration-300 transform hover:scale-105 hover:shadow-lg border border-white/10"
-            >
-                📊 Refresh Analytics
-            </button>
-        </section>
     </div>
 </main>
