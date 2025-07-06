@@ -296,52 +296,56 @@ async function fetchManualData() {
     }
 }
 
-onMount(async () => {
-    await loadChartJS();
-    
-    // Fetch initial historical data
-    fetchHistoricalData();
-    
-    // Set up real-time connection for live updates
-    try {
-        eventSource = new EventSource('/api/data');
-        
-        eventSource.onopen = () => {
-            connectionStatus = '🟢 Live';
-            console.log('Connected to live updates');
-        };
-        
-        eventSource.onmessage = (event) => {
-            const message = JSON.parse(event.data);
-            
-            if (message.data) {
-                console.log('📨 Received live update!');
-                liveData = message.data;
-                lastUpdated = new Date(message.timestamp);
-                
-                // Refresh historical data every few updates
-                if (Math.random() < 0.1) { // 10% chance each update
-                    fetchHistoricalData();
+onMount(() => {
+    let refreshInterval: ReturnType<typeof setInterval>;
+
+    (async () => {
+        await loadChartJS();
+
+        // Fetch initial historical data
+        fetchHistoricalData();
+
+        // Set up real-time connection for live updates
+        try {
+            eventSource = new EventSource('/api/data');
+
+            eventSource.onopen = () => {
+                connectionStatus = '🟢 Live';
+                console.log('Connected to live updates');
+            };
+
+            eventSource.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+
+                if (message.data) {
+                    console.log('📨 Received live update!');
+                    liveData = message.data;
+                    lastUpdated = new Date(message.timestamp);
+
+                    // Refresh historical data every few updates
+                    if (Math.random() < 0.1) { // 10% chance each update
+                        fetchHistoricalData();
+                    }
                 }
-            }
-        };
-        
-        eventSource.onerror = () => {
-            connectionStatus = '🔴 Disconnected';
-            console.error('Connection lost');
-        };
-    } catch (error) {
-        console.error('EventSource not available:', error);
-        connectionStatus = '🟡 Demo Mode';
-        simulateData();
-    }
-    
-    // Refresh historical data every 5 minutes
-    const refreshInterval = setInterval(fetchHistoricalData, 5 * 60 * 1000);
-    
-    // Return cleanup function
+            };
+
+            eventSource.onerror = () => {
+                connectionStatus = '🔴 Disconnected';
+                console.error('Connection lost');
+            };
+        } catch (error) {
+            console.error('EventSource not available:', error);
+            connectionStatus = '🟡 Demo Mode';
+            simulateData();
+        }
+
+        // Refresh historical data every 5 minutes
+        refreshInterval = setInterval(fetchHistoricalData, 5 * 60 * 1000);
+    })();
+
+    // Return cleanup function synchronously
     return () => {
-        clearInterval(refreshInterval);
+        if (refreshInterval) clearInterval(refreshInterval);
     };
 });
 
