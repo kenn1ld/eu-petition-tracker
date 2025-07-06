@@ -1,28 +1,4 @@
-<!-- Additional Stats Row -->
-        <section class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-12 animate-fadeInUp-delay-2">
-            <div class="stat-card glass rounded-2xl p-6 text-center relative">
-                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
-                <h3 class="text-sm text-slate-400 mb-4 font-medium">📊 Today Total</h3>
-                <p class="text-3xl font-bold gradient-text mb-1">{stats.totalToday.toLocaleString()}</p>
-                <span class="text-slate-400 text-sm">new signatures (24h)</span>
-            </div>
-            <div class="stat-card glass rounded-2xl p-6 text-center relative">
-                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
-                <h3 class="text-sm text-slate-400 mb-4 font-medium">🎯 Current Activity</h3>
-                <p class="text-3xl font-bold gradient-text mb-1">
-                    {#if stats.secRate > 0.1}
-                        High
-                    {:else if stats.minRate > 1}
-                        Medium
-                    {:else if stats.avgPerHour > 10}
-                        Low
-                    {:else}
-                        Minimal
-                    {/if}
-                </p>
-                <span class="text-slate-400 text-sm">signature activity level</span>
-            </div>
-        </section><!-- src/routes/+page.svelte -->
+<!-- src/routes/+page.svelte -->
 <script lang="ts">
 import { onMount, onDestroy } from 'svelte';
 import { browser } from '$app/environment';
@@ -45,11 +21,14 @@ interface ChartDataPoint {
 interface Stats {
     secRate: number;
     minRate: number;
-    avgPerHour: number;
+    hourlyRate: number;
     dailyRate: number;
     peakHour: number;
     totalToday: number;
     timeToGoal: string;
+    activityLevel: string;
+    currentSignatures: number;
+    goal: number;
 }
 
 // Chart.js
@@ -65,17 +44,22 @@ let lastUpdated: Date | null = null;
 let connectionStatus = 'Connecting...';
 let eventSource: EventSource;
 
-// Historical data
+// Historical data (for charts only)
 let historicalData: HistoricalEntry[] = [];
 let chartData: ChartDataPoint[] = [];
+
+// Server-calculated stats
 let stats: Stats = {
     secRate: 0,
     minRate: 0,
-    avgPerHour: 0,
+    hourlyRate: 0,
     dailyRate: 0,
     peakHour: 0,
     totalToday: 0,
-    timeToGoal: 'Calculating...'
+    timeToGoal: 'Calculating...',
+    activityLevel: 'Unknown',
+    currentSignatures: 0,
+    goal: 1500000
 };
 
 // Cleanup functions
@@ -93,7 +77,6 @@ const CHART_COLORS = {
 const TIMEZONE = 'Europe/Oslo';
 const MAX_CHART_POINTS = 48;
 const MAX_HISTORICAL_ENTRIES = 1000;
-const UPDATE_INTERVAL = 1000;
 const REFRESH_INTERVAL = 60000;
 
 // Utility functions
@@ -108,7 +91,34 @@ async function loadChartJS() {
     Chart = chartModule.default;
 }
 
-// Data fetching
+// Fetch server-calculated stats
+async function fetchStats(): Promise<void> {
+    try {
+        const response = await fetch('/api/stats');
+        const result = await response.json();
+        
+        if (result.error) {
+            console.error('Stats API error:', result.error);
+            return;
+        }
+        
+        stats = result;
+        console.log('📊 Stats updated from server:', stats);
+        
+        // Update live data if we have current signature info
+        if (result.currentSignatures && result.goal) {
+            liveData = {
+                signatureCount: result.currentSignatures,
+                goal: result.goal
+            };
+        }
+        
+    } catch (error) {
+        console.error('Failed to fetch stats:', error);
+    }
+}
+
+// Keep historical data fetching for charts
 async function fetchHistoricalData(): Promise<void> {
     try {
         const response = await fetch('/api/history?hours=all');
@@ -122,7 +132,6 @@ async function fetchHistoricalData(): Promise<void> {
         if (isFirstLoad || hasNewData) {
             historicalData = result.data;
             processChartData();
-            calculateStats();
             updateCharts();
             console.log(`📊 Historical data updated: ${result.data.length} entries`);
         }
@@ -131,7 +140,7 @@ async function fetchHistoricalData(): Promise<void> {
     }
 }
 
-// Data processing
+// Data processing for charts
 function processChartData(): void {
     if (historicalData.length === 0) return;
     
@@ -165,123 +174,6 @@ function processChartData(): void {
             return parseTime(a.time).getTime() - parseTime(b.time).getTime();
         })
         .slice(-MAX_CHART_POINTS);
-}
-
-function calculateSlidingWindowRate(timeWindowMs: number): number {
-    if (historicalData.length === 0) return 0;
-    
-    const now = Date.now();
-    const windowStart = now - timeWindowMs;
-    
-    // Get entries within the time window
-    const windowData = historicalData.filter(row => {
-        const entryTime = new Date(row.timestamp).getTime();
-        return entryTime > windowStart;
-    });
-    
-    if (windowData.length === 0) return 0;
-    
-    // Sum only positive changes (new signatures)
-    const totalChanges = windowData.reduce((sum, row) => {
-        return sum + Math.max(0, row.change_amount);
-    }, 0);
-    
-    // Calculate rate per unit time
-    const actualWindowMs = Math.min(timeWindowMs, now - new Date(windowData[0].timestamp).getTime());
-    return totalChanges > 0 ? (totalChanges / (actualWindowMs / 1000)) : 0;
-}
-
-function calculateStats(): void {
-    if (historicalData.length === 0) return;
-    
-    const now = Date.now();
-    
-    // Sliding window rates
-    stats.secRate = calculateSlidingWindowRate(30 * 1000); // Last 30 seconds, rate per second
-    stats.minRate = calculateSlidingWindowRate(5 * 60 * 1000) * 60; // Last 5 minutes, rate per minute
-    stats.avgPerHour = calculateSlidingWindowRate(60 * 60 * 1000) * 3600; // Last 1 hour, rate per hour
-    stats.dailyRate = calculateSlidingWindowRate(24 * 60 * 60 * 1000) * 86400; // Last 24 hours, rate per day
-    
-    // Total signatures today (last 24 hours)
-    const dayAgo = now - (24 * 60 * 60 * 1000);
-    const todayData = historicalData.filter(row => {
-        const utcDate = new Date(row.timestamp);
-        return utcDate.getTime() > dayAgo;
-    });
-    
-    stats.totalToday = todayData.reduce((sum, row) => {
-        return sum + Math.max(0, row.change_amount);
-    }, 0);
-    
-    // Find peak hour from recent data using CEST
-    const hourlyData: Record<number, number> = {};
-    todayData.forEach(row => {
-        const cestDate = toCEST(new Date(row.timestamp));
-        const hour = cestDate.getHours();
-        if (row.change_amount > 0) {
-            hourlyData[hour] = (hourlyData[hour] || 0) + row.change_amount;
-        }
-    });
-    
-    let peakHour = 0;
-    let peakCount = 0;
-    Object.entries(hourlyData).forEach(([hour, count]) => {
-        if (count > peakCount) {
-            peakCount = count;
-            peakHour = parseInt(hour);
-        }
-    });
-    stats.peakHour = peakHour;
-    
-    // Estimate time to goal using the most appropriate rate
-    if (liveData) {
-        const remaining = liveData.goal - liveData.signatureCount;
-        let rateToUse = 0;
-        let timeUnit = '';
-        
-        // Choose the most appropriate rate based on activity level
-        if (stats.secRate > 0.1) {
-            // High activity - use per-second rate
-            rateToUse = stats.secRate;
-            const secondsToGoal = remaining / rateToUse;
-            if (secondsToGoal < 60) {
-                stats.timeToGoal = `${Math.round(secondsToGoal)} seconds`;
-            } else if (secondsToGoal < 3600) {
-                stats.timeToGoal = `${Math.round(secondsToGoal / 60)} minutes`;
-            } else {
-                stats.timeToGoal = `${Math.round(secondsToGoal / 3600)} hours`;
-            }
-        } else if (stats.minRate > 0.1) {
-            // Medium activity - use per-minute rate
-            rateToUse = stats.minRate / 60; // Convert to per-second
-            const secondsToGoal = remaining / rateToUse;
-            const minutesToGoal = secondsToGoal / 60;
-            if (minutesToGoal < 60) {
-                stats.timeToGoal = `${Math.round(minutesToGoal)} minutes`;
-            } else if (minutesToGoal < 1440) {
-                stats.timeToGoal = `${Math.round(minutesToGoal / 60)} hours`;
-            } else {
-                stats.timeToGoal = `${Math.round(minutesToGoal / 1440)} days`;
-            }
-        } else if (stats.avgPerHour > 0.1) {
-            // Low activity - use hourly rate
-            rateToUse = stats.avgPerHour / 3600; // Convert to per-second
-            const hoursToGoal = remaining / stats.avgPerHour;
-            if (hoursToGoal < 24) {
-                stats.timeToGoal = `${Math.round(hoursToGoal)} hours`;
-            } else {
-                stats.timeToGoal = `${Math.round(hoursToGoal / 24)} days`;
-            }
-        } else if (stats.dailyRate > 0) {
-            // Very low activity - use daily rate
-            const daysToGoal = remaining / stats.dailyRate;
-            stats.timeToGoal = `${Math.round(daysToGoal)} days`;
-        } else {
-            stats.timeToGoal = 'No recent activity';
-        }
-    } else {
-        stats.timeToGoal = 'Calculating...';
-    }
 }
 
 // Chart management
@@ -341,12 +233,14 @@ function createLineChart(): void {
 }
 
 function createDoughnutChart(): void {
-    if (!doughnutChartCanvas || !Chart || !liveData) return;
+    if (!doughnutChartCanvas || !Chart) return;
     
     const ctx = doughnutChartCanvas.getContext('2d');
     if (!ctx) return;
     
-    const progressPercentage = (liveData.signatureCount / liveData.goal) * 100;
+    const progressPercentage = stats.currentSignatures && stats.goal 
+        ? (stats.currentSignatures / stats.goal) * 100 
+        : (liveData ? (liveData.signatureCount / liveData.goal) * 100 : 0);
     
     doughnutChart = new Chart(ctx, {
         type: 'doughnut',
@@ -390,8 +284,12 @@ function updateLineChart(): void {
 }
 
 function updateDoughnutChart(): void {
-    if (!doughnutChart || !liveData) return;
-    const progressPercentage = (liveData.signatureCount / liveData.goal) * 100;
+    if (!doughnutChart) return;
+    
+    const progressPercentage = stats.currentSignatures && stats.goal 
+        ? (stats.currentSignatures / stats.goal) * 100 
+        : (liveData ? (liveData.signatureCount / liveData.goal) * 100 : 0);
+        
     doughnutChart.data.datasets[0].data = [progressPercentage, 100 - progressPercentage];
     doughnutChart.update('none');
 }
@@ -409,7 +307,7 @@ function updateCharts(): void {
     }
     
     // Create or update doughnut chart
-    if (liveData) {
+    if (stats.currentSignatures || liveData) {
         if (!doughnutChart) {
             createDoughnutChart();
         } else {
@@ -427,7 +325,7 @@ function setupEventSource(): void {
         console.log('Connected to live updates');
     };
     
-    eventSource.onmessage = (event) => {
+    eventSource.onmessage = async (event) => {
         const message = JSON.parse(event.data);
         if (!message.data || message.type === 'heartbeat') return;
         
@@ -439,8 +337,9 @@ function setupEventSource(): void {
         const lastEntry = historicalData[historicalData.length - 1];
         const hasNewSignatures = message.data.signatureCount !== lastEntry?.signature_count;
         
-        // Always update historical data when signature count changes
+        // Always update live data and fetch fresh stats when new data arrives
         if (hasNewSignatures) {
+            // Update historical data for charts
             const changeAmount = lastEntry 
                 ? message.data.signatureCount - lastEntry.signature_count 
                 : 0;
@@ -459,10 +358,12 @@ function setupEventSource(): void {
             
             processChartData();
             console.log(`📊 Added new entry: +${changeAmount} signatures (Total: ${message.data.signatureCount})`);
+            
+            // Fetch fresh stats from server when signatures change
+            await fetchStats();
         }
         
-        // Always recalculate stats and update charts when live data changes
-        calculateStats();
+        // Update charts
         updateCharts();
         
         // Force reactive updates
@@ -480,23 +381,28 @@ function setupEventSource(): void {
 // Main initialization
 onMount(async () => {
     await loadChartJS();
-    await fetchHistoricalData();
+    
+    // Fetch initial data
+    await fetchHistoricalData(); // For charts
+    await fetchStats(); // For stats from server
     
     setupEventSource();
     
-    // Update interval - this ensures EVERYTHING updates in real-time
-    updateInterval = setInterval(() => {
-        if (!liveData) return;
+    // Update interval - fetch stats from server every 5 seconds
+    updateInterval = setInterval(async () => {
+        // Fetch fresh stats from server
+        await fetchStats();
         
-        // Refresh historical data every minute
-        if (Date.now() % REFRESH_INTERVAL < UPDATE_INTERVAL) {
-            fetchHistoricalData();
+        // Refresh historical data every minute for charts
+        if (Date.now() % REFRESH_INTERVAL < 5000) {
+            await fetchHistoricalData();
         }
         
-        // Always recalculate stats and update charts for real-time updates
-        calculateStats();
-        updateCharts();
-    }, UPDATE_INTERVAL);
+        // Update charts if we have data
+        if (chartData.length > 0) {
+            updateCharts();
+        }
+    }, 5000); // Every 5 seconds instead of every second
     
     cleanupFunctions.push(() => clearInterval(updateInterval));
 });
@@ -508,9 +414,9 @@ onDestroy(() => {
     doughnutChart?.destroy();
 });
 
-// Reactive values
-$: progressPercentage = liveData ? (liveData.signatureCount / liveData.goal) * 100 : 0;
-$: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
+// Reactive values - now use server-calculated stats
+$: progressPercentage = stats.currentSignatures && stats.goal ? (stats.currentSignatures / stats.goal) * 100 : 0;
+$: remainingSignatures = stats.currentSignatures && stats.goal ? stats.goal - stats.currentSignatures : 0;
 </script>
 
 <svelte:head>
@@ -645,16 +551,16 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
         </header>
 
         <!-- Live Data Section -->
-        {#if liveData}
+        {#if stats.currentSignatures || liveData}
             <section class="glass rounded-3xl p-8 md:p-12 text-center mb-12 relative overflow-hidden animate-fadeInUp-delay-1">
                 <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/40 to-transparent"></div>
                 
                 <div class="mb-8">
                     <h2 class="text-5xl md:text-7xl font-black mb-2 text-white tracking-tight">
-                        {liveData.signatureCount.toLocaleString()}
+                        {stats.currentSignatures ? stats.currentSignatures.toLocaleString() : liveData?.signatureCount.toLocaleString()}
                     </h2>
                     <p class="text-xl text-slate-300">
-                        of {liveData.goal.toLocaleString()} signatures
+                        of {stats.goal ? stats.goal.toLocaleString() : liveData?.goal.toLocaleString()} signatures
                     </p>
                 </div>
                 
@@ -683,8 +589,8 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
             {#each [
                 { icon: '⚡', label: 'Per Second', value: stats.secRate.toFixed(2), unit: 'sig/sec (30s window)' },
                 { icon: '📈', label: 'Per Minute', value: stats.minRate.toFixed(1), unit: 'sig/min (5m window)' },
-                { icon: '🕐', label: 'Per Hour', value: Math.round(stats.avgPerHour).toLocaleString(), unit: 'sig/hour (1h window)' },
-                { icon: '📅', label: 'Per Day', value: Math.round(stats.dailyRate).toLocaleString(), unit: 'sig/day (24h window)' },
+                { icon: '🕐', label: 'Per Hour', value: stats.hourlyRate.toLocaleString(), unit: 'sig/hour (1h window)' },
+                { icon: '📅', label: 'Per Day', value: stats.dailyRate.toLocaleString(), unit: 'sig/day (24h window)' },
                 { icon: '🔥', label: 'Peak Hour', value: `${stats.peakHour}:00`, unit: 'most active today' },
                 { icon: '⏰', label: 'Est. Completion', value: stats.timeToGoal, unit: 'at current rate' }
             ] as stat}
@@ -695,6 +601,22 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
                     <span class="text-xs text-slate-400">{stat.unit}</span>
                 </div>
             {/each}
+        </section>
+
+        <!-- Additional Stats Row -->
+        <section class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-12 animate-fadeInUp-delay-2">
+            <div class="stat-card glass rounded-2xl p-6 text-center relative">
+                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
+                <h3 class="text-sm text-slate-400 mb-4 font-medium">📊 Today Total</h3>
+                <p class="text-3xl font-bold gradient-text mb-1">{stats.totalToday.toLocaleString()}</p>
+                <span class="text-slate-400 text-sm">new signatures (24h)</span>
+            </div>
+            <div class="stat-card glass rounded-2xl p-6 text-center relative">
+                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
+                <h3 class="text-sm text-slate-400 mb-4 font-medium">🎯 Current Activity</h3>
+                <p class="text-3xl font-bold gradient-text mb-1">{stats.activityLevel}</p>
+                <span class="text-slate-400 text-sm">signature activity level</span>
+            </div>
         </section>
 
         <!-- Charts Grid -->
