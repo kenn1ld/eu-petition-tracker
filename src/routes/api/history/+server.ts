@@ -1,3 +1,4 @@
+// src/routes/api/history/+server.ts
 import type { RequestHandler } from '@sveltejs/kit';
 import { supabase } from '$lib/supabase.js';
 import { applyGoalOverride } from '$lib/config.js';

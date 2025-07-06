@@ -59,42 +59,53 @@ async function fetchHistoricalData() {
 function processChartData() {
     if (historicalData.length === 0) return;
     
-    // Group data by time periods for better visualization
-    const timeGroups: Record<string, number[]> = {};
+    // Group data by hour using CEST timezone
+    const timeGroups: Record<string, { changes: number[], totalSignatures: number }> = {};
     
     historicalData.forEach(row => {
-        const date = new Date(row.timestamp);
-        // Group by hour for recent data, by day for older data
-        const isRecent = Date.now() - date.getTime() < 24 * 60 * 60 * 1000;
+        // Convert to CEST (UTC+2)
+        const utcDate = new Date(row.timestamp);
+        const cestDate = new Date(utcDate.getTime() + (2 * 60 * 60 * 1000)); // Add 2 hours for CEST
         
-        let key: string;
-        if (isRecent) {
-            key = `${date.getMonth() + 1}/${date.getDate()} ${date.getHours()}:00`;
-        } else {
-            key = `${date.getMonth() + 1}/${date.getDate()}`;
-        }
+        const hour = cestDate.getHours();
+        const day = cestDate.getDate();
+        const month = cestDate.getMonth() + 1;
+        
+        const key = `${month}/${day} ${hour.toString().padStart(2, '0')}:00`;
         
         if (!timeGroups[key]) {
-            timeGroups[key] = [];
+            timeGroups[key] = { changes: [], totalSignatures: row.signature_count };
         }
-        timeGroups[key].push(row.change_amount);
+        timeGroups[key].changes.push(row.change_amount);
+        // Keep the latest signature count for this time period
+        timeGroups[key].totalSignatures = Math.max(timeGroups[key].totalSignatures, row.signature_count);
     });
     
     // Create chart data
-    chartData = Object.entries(timeGroups).map(([time, changes]) => ({
+    chartData = Object.entries(timeGroups).map(([time, data]) => ({
         time,
-        signatures: (changes as number[]).reduce((sum: number, change: number) => sum + change, 0),
-        count: changes.length
+        signatures: data.changes.reduce((sum: number, change: number) => sum + change, 0),
+        totalSignatures: data.totalSignatures,
+        count: data.changes.length
     })).sort((a, b) => {
-        // Sort by time
-        const aTime = new Date(a.time);
-        const bTime = new Date(b.time);
-        return aTime.getTime() - bTime.getTime();
+        // Sort by time properly
+        const [aMonth, aRest] = a.time.split('/');
+        const [aDay, aTime] = aRest.split(' ');
+        const [aHour] = aTime.split(':');
+        
+        const [bMonth, bRest] = b.time.split('/');
+        const [bDay, bTime] = bRest.split(' ');
+        const [bHour] = bTime.split(':');
+        
+        const aDate = new Date(2025, parseInt(aMonth) - 1, parseInt(aDay), parseInt(aHour));
+        const bDate = new Date(2025, parseInt(bMonth) - 1, parseInt(bDay), parseInt(bHour));
+        
+        return aDate.getTime() - bDate.getTime();
     });
     
-    // Keep only last 50 data points for performance
-    if (chartData.length > 50) {
-        chartData = chartData.slice(-50);
+    // Keep only last 48 data points for performance (2 days worth)
+    if (chartData.length > 48) {
+        chartData = chartData.slice(-48);
     }
 }
 
@@ -104,22 +115,25 @@ function calculateStats() {
     const now = Date.now();
     const dayAgo = now - (24 * 60 * 60 * 1000);
     
-    // Calculate today's signatures
-    const todayData = historicalData.filter(row => 
-        new Date(row.timestamp).getTime() > dayAgo
-    );
+    // Calculate today's signatures using CEST
+    const todayData = historicalData.filter(row => {
+        const utcDate = new Date(row.timestamp);
+        const cestDate = new Date(utcDate.getTime() + (2 * 60 * 60 * 1000));
+        return cestDate.getTime() > dayAgo;
+    });
     
     const totalChanges = todayData.reduce((sum, row) => sum + row.change_amount, 0);
-    const hours = todayData.length > 0 ? 
-        (now - Math.max(...todayData.map(r => new Date(r.timestamp).getTime()))) / (1000 * 60 * 60) : 1;
+    const hours = todayData.length > 0 ? 24 : 1; // Use 24 hours for daily rate calculation
     
-    stats.avgPerHour = Math.round(totalChanges / Math.max(hours, 1));
+    stats.avgPerHour = Math.round(totalChanges / hours);
     stats.totalToday = totalChanges;
     
-    // Find peak hour from recent data
+    // Find peak hour from recent data using CEST
     const hourlyData: Record<number, number> = {};
     todayData.forEach(row => {
-        const hour = new Date(row.timestamp).getHours();
+        const utcDate = new Date(row.timestamp);
+        const cestDate = new Date(utcDate.getTime() + (2 * 60 * 60 * 1000));
+        const hour = cestDate.getHours();
         hourlyData[hour] = (hourlyData[hour] || 0) + row.change_amount;
     });
     
@@ -320,6 +334,25 @@ onMount(() => {
                     liveData = message.data;
                     lastUpdated = new Date(message.timestamp);
                     
+                    // Add new data point to historical data if it's a real update
+                    if (message.data.signatureCount !== (historicalData[historicalData.length - 1]?.signature_count)) {
+                        const newEntry = {
+                            timestamp: new Date().toISOString(),
+                            signature_count: message.data.signatureCount,
+                            goal: message.data.goal,
+                            change_amount: historicalData.length > 0 ? 
+                                message.data.signatureCount - historicalData[historicalData.length - 1].signature_count : 0
+                        };
+                        historicalData.push(newEntry);
+                        
+                        // Keep only last 1000 entries for performance
+                        if (historicalData.length > 1000) {
+                            historicalData = historicalData.slice(-1000);
+                        }
+                        
+                        processChartData();
+                    }
+                    
                     // Update charts and stats immediately
                     calculateStats();
                     updateCharts();
@@ -337,8 +370,8 @@ onMount(() => {
         // Update everything every second for smooth real-time experience
         updateInterval = setInterval(() => {
             if (liveData) {
-                // Refresh historical data every 30 seconds
-                if (Date.now() % 30000 < 1000) {
+                // Refresh historical data every 60 seconds to get any missed updates
+                if (Date.now() % 60000 < 1000) {
                     fetchHistoricalData();
                 }
                 
@@ -399,6 +432,7 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
             height: 100%;
             background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
             animation: shimmer 3s infinite;
+            z-index: 1;
         }
         
         @keyframes shimmer {
@@ -485,7 +519,7 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
                 </span>
                 {#if lastUpdated}
                     <span class="text-sm">
-                        Last updated: {lastUpdated.toLocaleTimeString()}
+                        Last updated: {new Date(lastUpdated.getTime() + (2 * 60 * 60 * 1000)).toLocaleTimeString('en-US', { timeZone: 'Europe/Oslo' })} CEST
                     </span>
                 {/if}
             </div>
@@ -508,7 +542,7 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
                 <div class="max-w-2xl mx-auto">
                     <div class="relative w-full h-3 bg-white/10 rounded-full overflow-hidden mb-4">
                         <div 
-                            class="h-full bg-gradient-to-r from-green-400 to-green-500 rounded-full transition-all duration-500 ease-out progress-shimmer"
+                            class="h-full bg-gradient-to-r from-green-400 to-green-500 rounded-full transition-all duration-500 ease-out progress-shimmer relative z-0"
                             style="width: {Math.min(100, progressPercentage)}%"
                         ></div>
                     </div>
@@ -560,7 +594,7 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-12">
             <!-- Line Chart -->
             <div class="lg:col-span-2 glass rounded-2xl p-6 animate-fadeInUp-delay-3">
-                <h3 class="text-xl font-semibold text-white mb-6">📈 Signature Activity Over Time</h3>
+                <h3 class="text-xl font-semibold text-white mb-6">📈 Signature Activity Over Time (CEST)</h3>
                 <div class="relative h-80">
                     <canvas bind:this={lineChartCanvas}></canvas>
                 </div>
@@ -584,12 +618,12 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
         <!-- Recent Activity -->
         {#if historicalData.length > 0}
             <section class="glass rounded-2xl p-6 mb-12 animate-fadeInUp-delay-4">
-                <h3 class="text-xl font-semibold text-white mb-6">🕐 Recent Activity</h3>
+                <h3 class="text-xl font-semibold text-white mb-6">🕐 Recent Activity (CEST)</h3>
                 <div class="space-y-3 max-h-96 overflow-y-auto pr-2">
                     {#each historicalData.slice(-15).reverse() as entry}
                         <div class="glass rounded-xl p-4 grid grid-cols-1 md:grid-cols-3 gap-2 md:gap-4 items-center hover:bg-white/10 transition-colors">
                             <span class="text-sm text-slate-400 font-mono">
-                                {new Date(entry.timestamp).toLocaleString()}
+                                {new Date(new Date(entry.timestamp).getTime() + (2 * 60 * 60 * 1000)).toLocaleString('en-US', { timeZone: 'Europe/Oslo' })} CEST
                             </span>
                             <span class="font-semibold text-green-400">
                                 +{entry.change_amount.toLocaleString()} signatures
