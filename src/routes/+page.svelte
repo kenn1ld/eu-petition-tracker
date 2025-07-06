@@ -289,9 +289,25 @@ function updateDoughnutChart(): void {
 }
 
 function updateCharts(): void {
-    if (!Chart || !chartData.length) return;
-    updateLineChart();
-    updateDoughnutChart();
+    if (!Chart) return;
+    
+    // Create or update line chart
+    if (chartData.length > 0) {
+        if (!lineChart) {
+            createLineChart();
+        } else {
+            updateLineChart();
+        }
+    }
+    
+    // Create or update doughnut chart
+    if (liveData) {
+        if (!doughnutChart) {
+            createDoughnutChart();
+        } else {
+            updateDoughnutChart();
+        }
+    }
 }
 
 // Real-time connection
@@ -330,12 +346,11 @@ function setupEventSource(): void {
             }
             
             processChartData();
-            calculateStats();
-            updateCharts();
-        } else {
-            calculateStats();
-            updateDoughnutChart();
         }
+        
+        // Always update stats and charts when new live data arrives
+        calculateStats();
+        updateCharts();
     };
     
     eventSource.onerror = () => {
@@ -351,17 +366,9 @@ onMount(async () => {
     await loadChartJS();
     await fetchHistoricalData();
     
-    // Create initial charts
-    if (chartData.length > 0) {
-        createLineChart();
-    }
-    if (liveData) {
-        createDoughnutChart();
-    }
-    
     setupEventSource();
     
-    // Update interval
+    // Update interval - this ensures EVERYTHING updates in real-time
     updateInterval = setInterval(() => {
         if (!liveData) return;
         
@@ -370,8 +377,9 @@ onMount(async () => {
             fetchHistoricalData();
         }
         
+        // Always recalculate stats and update charts for real-time updates
         calculateStats();
-        updateDoughnutChart();
+        updateCharts();
     }, UPDATE_INTERVAL);
     
     cleanupFunctions.push(() => clearInterval(updateInterval));
