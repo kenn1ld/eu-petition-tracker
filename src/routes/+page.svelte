@@ -2,12 +2,35 @@
 <script lang="ts">
 import { onMount, onDestroy } from 'svelte';
 import { browser } from '$app/environment';
-import { applyGoalOverride } from '$lib/config.js';
+
+// Types
+interface HistoricalEntry {
+    timestamp: string;
+    signature_count: number;
+    goal: number;
+    change_amount: number;
+}
+
+interface ChartDataPoint {
+    time: string;
+    signatures: number;
+    totalSignatures: number;
+    count: number;
+}
+
+interface Stats {
+    avgPerHour: number;
+    peakHour: number;
+    totalToday: number;
+    timeToGoal: string;
+}
 
 // Chart.js
 let Chart: any;
 let lineChart: any;
 let doughnutChart: any;
+let lineChartCanvas: HTMLCanvasElement;
+let doughnutChartCanvas: HTMLCanvasElement;
 
 // Real-time data
 let liveData: any = null;
@@ -16,131 +39,120 @@ let connectionStatus = 'Connecting...';
 let eventSource: EventSource;
 
 // Historical data
-let historicalData: any[] = [];
-let chartData: any[] = [];
-let stats = {
+let historicalData: HistoricalEntry[] = [];
+let chartData: ChartDataPoint[] = [];
+let stats: Stats = {
     avgPerHour: 0,
     peakHour: 0,
     totalToday: 0,
     timeToGoal: 'Calculating...'
 };
 
-// Chart elements
-let lineChartCanvas: HTMLCanvasElement;
-let doughnutChartCanvas: HTMLCanvasElement;
-
-// Real-time update interval
+// Cleanup functions
 let updateInterval: ReturnType<typeof setInterval>;
+let cleanupFunctions: (() => void)[] = [];
 
+// Constants
+const CHART_COLORS = {
+    line: 'rgba(102, 126, 234, 1)',
+    lineFill: 'rgba(102, 126, 234, 0.1)',
+    progress: 'rgba(16, 185, 129, 1)',
+    progressBg: 'rgba(255, 255, 255, 0.1)'
+};
+
+const TIMEZONE = 'Europe/Oslo';
+const MAX_CHART_POINTS = 48;
+const MAX_HISTORICAL_ENTRIES = 1000;
+const UPDATE_INTERVAL = 1000;
+const REFRESH_INTERVAL = 60000;
+
+// Utility functions
+const toCEST = (date: Date): Date => new Date(date.toLocaleString("en-US", { timeZone: TIMEZONE }));
+const formatTime = (date: Date): string => date.toLocaleTimeString('en-US', { timeZone: TIMEZONE });
+const formatDateTime = (date: Date): string => date.toLocaleString('en-US', { timeZone: TIMEZONE });
+
+// Chart.js loader
 async function loadChartJS() {
-    if (browser) {
-        const chartModule = await import('chart.js/auto');
-        Chart = chartModule.default;
-    }
+    if (!browser) return;
+    const chartModule = await import('chart.js/auto');
+    Chart = chartModule.default;
 }
 
-async function fetchHistoricalData() {
+// Data fetching
+async function fetchHistoricalData(): Promise<void> {
     try {
-        // Fetch ALL historical data, not just 24 hours
         const response = await fetch('/api/history?hours=all');
         const result = await response.json();
         
-        if (result.data) {
-            // Only update if we have new data or this is the first load
-            const isFirstLoad = historicalData.length === 0;
-            const hasNewData = result.data.length > historicalData.length;
-            
-            if (isFirstLoad || hasNewData) {
-                historicalData = result.data;
-                processChartData();
-                calculateStats();
-                updateCharts();
-                console.log(`📊 Historical data updated: ${result.data.length} entries`);
-            }
+        if (!result.data) return;
+        
+        const isFirstLoad = historicalData.length === 0;
+        const hasNewData = result.data.length > historicalData.length;
+        
+        if (isFirstLoad || hasNewData) {
+            historicalData = result.data;
+            processChartData();
+            calculateStats();
+            updateCharts();
+            console.log(`📊 Historical data updated: ${result.data.length} entries`);
         }
     } catch (error) {
         console.error('Failed to fetch historical data:', error);
     }
 }
 
-function processChartData() {
+// Data processing
+function processChartData(): void {
     if (historicalData.length === 0) return;
     
-    // Group data by hour using CEST timezone
     const timeGroups: Record<string, { changes: number[], totalSignatures: number }> = {};
     
     historicalData.forEach(row => {
-        // Use CEST timezone directly without manual offset
-        const date = new Date(row.timestamp);
-        const cestDate = new Date(date.toLocaleString("en-US", {timeZone: "Europe/Oslo"}));
-        
-        const hour = cestDate.getHours();
-        const day = cestDate.getDate();
-        const month = cestDate.getMonth() + 1;
-        
-        const key = `${month}/${day} ${hour.toString().padStart(2, '0')}:00`;
+        const cestDate = toCEST(new Date(row.timestamp));
+        const key = `${cestDate.getMonth() + 1}/${cestDate.getDate()} ${cestDate.getHours().toString().padStart(2, '0')}:00`;
         
         if (!timeGroups[key]) {
             timeGroups[key] = { changes: [], totalSignatures: row.signature_count };
         }
         timeGroups[key].changes.push(row.change_amount);
-        // Keep the latest signature count for this time period
         timeGroups[key].totalSignatures = Math.max(timeGroups[key].totalSignatures, row.signature_count);
     });
     
-    // Create chart data
-    chartData = Object.entries(timeGroups).map(([time, data]) => ({
-        time,
-        signatures: data.changes.reduce((sum: number, change: number) => sum + change, 0),
-        totalSignatures: data.totalSignatures,
-        count: data.changes.length
-    })).sort((a, b) => {
-        // Sort by time properly
-        const [aMonth, aRest] = a.time.split('/');
-        const [aDay, aTime] = aRest.split(' ');
-        const [aHour] = aTime.split(':');
-        
-        const [bMonth, bRest] = b.time.split('/');
-        const [bDay, bTime] = bRest.split(' ');
-        const [bHour] = bTime.split(':');
-        
-        const aDate = new Date(2025, parseInt(aMonth) - 1, parseInt(aDay), parseInt(aHour));
-        const bDate = new Date(2025, parseInt(bMonth) - 1, parseInt(bDay), parseInt(bHour));
-        
-        return aDate.getTime() - bDate.getTime();
-    });
-    
-    // Keep only last 48 data points for performance (2 days worth)
-    if (chartData.length > 48) {
-        chartData = chartData.slice(-48);
-    }
+    chartData = Object.entries(timeGroups)
+        .map(([time, data]) => ({
+            time,
+            signatures: data.changes.reduce((sum, change) => sum + change, 0),
+            totalSignatures: data.totalSignatures,
+            count: data.changes.length
+        }))
+        .sort((a, b) => {
+            const parseTime = (timeStr: string) => {
+                const [month, rest] = timeStr.split('/');
+                const [day, time] = rest.split(' ');
+                const [hour] = time.split(':');
+                return new Date(2025, parseInt(month) - 1, parseInt(day), parseInt(hour));
+            };
+            return parseTime(a.time).getTime() - parseTime(b.time).getTime();
+        })
+        .slice(-MAX_CHART_POINTS);
 }
 
-function calculateStats() {
+function calculateStats(): void {
     if (historicalData.length === 0) return;
     
-    const now = Date.now();
-    const dayAgo = now - (24 * 60 * 60 * 1000);
-    
-    // Calculate today's signatures using CEST
-    const todayData = historicalData.filter(row => {
-        const date = new Date(row.timestamp);
-        const cestDate = new Date(date.toLocaleString("en-US", {timeZone: "Europe/Oslo"}));
-        return cestDate.getTime() > dayAgo;
-    });
+    const dayAgo = Date.now() - (24 * 60 * 60 * 1000);
+    const todayData = historicalData.filter(row => 
+        toCEST(new Date(row.timestamp)).getTime() > dayAgo
+    );
     
     const totalChanges = todayData.reduce((sum, row) => sum + row.change_amount, 0);
-    const hours = todayData.length > 0 ? 24 : 1; // Use 24 hours for daily rate calculation
-    
-    stats.avgPerHour = Math.round(totalChanges / hours);
+    stats.avgPerHour = Math.round(totalChanges / 24);
     stats.totalToday = totalChanges;
     
-    // Find peak hour from recent data using CEST
+    // Find peak hour
     const hourlyData: Record<number, number> = {};
     todayData.forEach(row => {
-        const date = new Date(row.timestamp);
-        const cestDate = new Date(date.toLocaleString("en-US", {timeZone: "Europe/Oslo"}));
-        const hour = cestDate.getHours();
+        const hour = toCEST(new Date(row.timestamp)).getHours();
         hourlyData[hour] = (hourlyData[hour] || 0) + row.change_amount;
     });
     
@@ -158,248 +170,221 @@ function calculateStats() {
     if (liveData && stats.avgPerHour > 0) {
         const remaining = liveData.goal - liveData.signatureCount;
         const hoursToGoal = remaining / stats.avgPerHour;
-        if (hoursToGoal < 24) {
-            stats.timeToGoal = `${Math.round(hoursToGoal)} hours`;
-        } else {
-            stats.timeToGoal = `${Math.round(hoursToGoal / 24)} days`;
-        }
+        stats.timeToGoal = hoursToGoal < 24 
+            ? `${Math.round(hoursToGoal)} hours`
+            : `${Math.round(hoursToGoal / 24)} days`;
     }
 }
 
-function updateCharts() {
-    if (!Chart || !chartData.length) return;
-    
-    updateLineChart();
-    updateDoughnutChart();
-}
-
-function updateLineChart() {
-    if (!lineChartCanvas) return;
+// Chart management
+function createLineChart(): void {
+    if (!lineChartCanvas || !Chart) return;
     
     const ctx = lineChartCanvas.getContext('2d');
     if (!ctx) return;
     
-    // Update existing chart data instead of destroying/recreating
-    if (lineChart) {
-        lineChart.data.labels = chartData.map(d => d.time);
-        lineChart.data.datasets[0].data = chartData.map(d => d.signatures);
-        lineChart.update('none'); // No animation for smooth updates
-    } else {
-        lineChart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: chartData.map(d => d.time),
-                datasets: [{
-                    label: 'Signatures',
-                    data: chartData.map(d => d.signatures),
-                    borderColor: 'rgba(102, 126, 234, 1)',
-                    backgroundColor: 'rgba(102, 126, 234, 0.1)',
-                    borderWidth: 3,
-                    fill: true,
-                    tension: 0.4,
-                    pointBackgroundColor: 'rgba(102, 126, 234, 1)',
-                    pointBorderColor: 'rgba(255, 255, 255, 1)',
-                    pointBorderWidth: 2,
-                    pointRadius: 4,
-                    pointHoverRadius: 6
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        display: false
-                    },
-                    tooltip: {
-                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
-                        titleColor: 'white',
-                        bodyColor: 'white',
-                        borderColor: 'rgba(102, 126, 234, 1)',
-                        borderWidth: 1,
-                        cornerRadius: 8,
-                        displayColors: false
-                    }
-                },
-                scales: {
-                    x: {
-                        grid: {
-                            color: 'rgba(255, 255, 255, 0.1)',
-                            drawBorder: false
-                        },
-                        ticks: {
-                            color: 'rgba(255, 255, 255, 0.7)',
-                            font: {
-                                size: 12
-                            },
-                            maxTicksLimit: 10
-                        }
-                    },
-                    y: {
-                        grid: {
-                            color: 'rgba(255, 255, 255, 0.1)',
-                            drawBorder: false
-                        },
-                        ticks: {
-                            color: 'rgba(255, 255, 255, 0.7)',
-                            font: {
-                                size: 12
-                            }
-                        }
-                    }
-                },
-                animation: {
-                    duration: 0 // No animation for smooth real-time updates
+    lineChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: chartData.map(d => d.time),
+            datasets: [{
+                label: 'Signatures',
+                data: chartData.map(d => d.signatures),
+                borderColor: CHART_COLORS.line,
+                backgroundColor: CHART_COLORS.lineFill,
+                borderWidth: 3,
+                fill: true,
+                tension: 0.4,
+                pointBackgroundColor: CHART_COLORS.line,
+                pointBorderColor: 'rgba(255, 255, 255, 1)',
+                pointBorderWidth: 2,
+                pointRadius: 4,
+                pointHoverRadius: 6
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                    titleColor: 'white',
+                    bodyColor: 'white',
+                    borderColor: CHART_COLORS.line,
+                    borderWidth: 1,
+                    cornerRadius: 8,
+                    displayColors: false
                 }
-            }
-        });
-    }
+            },
+            scales: {
+                x: {
+                    grid: { color: 'rgba(255, 255, 255, 0.1)', drawBorder: false },
+                    ticks: { color: 'rgba(255, 255, 255, 0.7)', font: { size: 12 }, maxTicksLimit: 10 }
+                },
+                y: {
+                    grid: { color: 'rgba(255, 255, 255, 0.1)', drawBorder: false },
+                    ticks: { color: 'rgba(255, 255, 255, 0.7)', font: { size: 12 } }
+                }
+            },
+            animation: { duration: 0 }
+        }
+    });
 }
 
-function updateDoughnutChart() {
-    if (!doughnutChartCanvas || !liveData) return;
+function createDoughnutChart(): void {
+    if (!doughnutChartCanvas || !Chart || !liveData) return;
     
     const ctx = doughnutChartCanvas.getContext('2d');
     if (!ctx) return;
     
     const progressPercentage = (liveData.signatureCount / liveData.goal) * 100;
-    const remaining = 100 - progressPercentage;
     
-    // Update existing chart data instead of destroying/recreating
-    if (doughnutChart) {
-        doughnutChart.data.datasets[0].data = [progressPercentage, remaining];
-        doughnutChart.update('none'); // No animation for smooth updates
-    } else {
-        doughnutChart = new Chart(ctx, {
-            type: 'doughnut',
-            data: {
-                labels: ['Completed', 'Remaining'],
-                datasets: [{
-                    data: [progressPercentage, remaining],
-                    backgroundColor: [
-                        'rgba(16, 185, 129, 1)',
-                        'rgba(255, 255, 255, 0.1)'
-                    ],
-                    borderColor: [
-                        'rgba(16, 185, 129, 1)',
-                        'rgba(255, 255, 255, 0.2)'
-                    ],
-                    borderWidth: 2,
-                    cutout: '70%'
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        display: false
-                    },
-                    tooltip: {
-                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
-                        titleColor: 'white',
-                        bodyColor: 'white',
-                        borderColor: 'rgba(16, 185, 129, 1)',
-                        borderWidth: 1,
-                        cornerRadius: 8,
-                        callbacks: {
-                            label: function(context: any) {
-                                return context.label + ': ' + context.parsed.toFixed(1) + '%';
-                            }
-                        }
+    doughnutChart = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: ['Completed', 'Remaining'],
+            datasets: [{
+                data: [progressPercentage, 100 - progressPercentage],
+                backgroundColor: [CHART_COLORS.progress, CHART_COLORS.progressBg],
+                borderColor: [CHART_COLORS.progress, 'rgba(255, 255, 255, 0.2)'],
+                borderWidth: 2,
+                cutout: '70%'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                    titleColor: 'white',
+                    bodyColor: 'white',
+                    borderColor: CHART_COLORS.progress,
+                    borderWidth: 1,
+                    cornerRadius: 8,
+                    callbacks: {
+                        label: (context: any) => `${context.label}: ${context.parsed.toFixed(1)}%`
                     }
-                },
-                animation: {
-                    duration: 0 // No animation for smooth real-time updates
                 }
-            }
-        });
-    }
+            },
+            animation: { duration: 0 }
+        }
+    });
 }
 
-onMount(() => {
-    (async () => {
-        await loadChartJS();
+function updateLineChart(): void {
+    if (!lineChart) return;
+    lineChart.data.labels = chartData.map(d => d.time);
+    lineChart.data.datasets[0].data = chartData.map(d => d.signatures);
+    lineChart.update('none');
+}
 
-        // Fetch initial historical data
-        await fetchHistoricalData();
+function updateDoughnutChart(): void {
+    if (!doughnutChart || !liveData) return;
+    const progressPercentage = (liveData.signatureCount / liveData.goal) * 100;
+    doughnutChart.data.datasets[0].data = [progressPercentage, 100 - progressPercentage];
+    doughnutChart.update('none');
+}
 
-        // Set up real-time connection for live updates
-        try {
-            eventSource = new EventSource('/api/data');
+function updateCharts(): void {
+    if (!Chart || !chartData.length) return;
+    updateLineChart();
+    updateDoughnutChart();
+}
 
-            eventSource.onopen = () => {
-                connectionStatus = '🟢 Live';
-                console.log('Connected to live updates');
+// Real-time connection
+function setupEventSource(): void {
+    eventSource = new EventSource('/api/data');
+    
+    eventSource.onopen = () => {
+        connectionStatus = '🟢 Live';
+        console.log('Connected to live updates');
+    };
+    
+    eventSource.onmessage = (event) => {
+        const message = JSON.parse(event.data);
+        if (!message.data) return;
+        
+        console.log('📨 Received live update!');
+        liveData = message.data;
+        lastUpdated = new Date(message.timestamp);
+        
+        const lastEntry = historicalData[historicalData.length - 1];
+        const hasNewSignatures = message.data.signatureCount !== lastEntry?.signature_count;
+        
+        if (hasNewSignatures) {
+            const newEntry: HistoricalEntry = {
+                timestamp: new Date().toISOString(),
+                signature_count: message.data.signatureCount,
+                goal: message.data.goal,
+                change_amount: lastEntry 
+                    ? message.data.signatureCount - lastEntry.signature_count 
+                    : 0
             };
-
-            eventSource.onmessage = (event) => {
-                const message = JSON.parse(event.data);
-
-                if (message.data) {
-                    console.log('📨 Received live update!');
-                    liveData = message.data;
-                    lastUpdated = new Date(message.timestamp);
-                    
-                    // Add new data point to historical data if it's a real update
-                    if (message.data.signatureCount !== (historicalData[historicalData.length - 1]?.signature_count)) {
-                        const newEntry = {
-                            timestamp: new Date().toISOString(),
-                            signature_count: message.data.signatureCount,
-                            goal: message.data.goal,
-                            change_amount: historicalData.length > 0 ? 
-                                message.data.signatureCount - historicalData[historicalData.length - 1].signature_count : 0
-                        };
-                        historicalData.push(newEntry);
-                        
-                        // Keep only last 1000 entries for performance
-                        if (historicalData.length > 1000) {
-                            historicalData = historicalData.slice(-1000);
-                        }
-                        
-                        // Only reprocess chart data when we actually add new data
-                        processChartData();
-                        calculateStats();
-                        updateCharts();
-                    } else {
-                        // Just update stats and doughnut chart for existing data
-                        calculateStats();
-                        updateDoughnutChart();
-                    }
-                }
-            };
-
-            eventSource.onerror = () => {
-                connectionStatus = '🔴 Disconnected';
-                console.error('Connection lost');
-            };
-        } catch (error) {
-            console.error('EventSource not available:', error);
-        }
-
-        // Update everything every second for smooth real-time experience
-        updateInterval = setInterval(() => {
-            if (liveData) {
-                // Refresh historical data every 60 seconds to get any missed updates
-                if (Date.now() % 60000 < 1000) {
-                    fetchHistoricalData();
-                }
-                
-                // Only update stats and doughnut chart every second, not the line chart
-                calculateStats();
-                updateDoughnutChart();
+            
+            historicalData.push(newEntry);
+            if (historicalData.length > MAX_HISTORICAL_ENTRIES) {
+                historicalData = historicalData.slice(-MAX_HISTORICAL_ENTRIES);
             }
-        }, 1000);
-    })();
+            
+            processChartData();
+            calculateStats();
+            updateCharts();
+        } else {
+            calculateStats();
+            updateDoughnutChart();
+        }
+    };
+    
+    eventSource.onerror = () => {
+        connectionStatus = '🔴 Disconnected';
+        console.error('Connection lost');
+    };
+    
+    cleanupFunctions.push(() => eventSource?.close());
+}
+
+// Main initialization
+onMount(async () => {
+    await loadChartJS();
+    await fetchHistoricalData();
+    
+    // Create initial charts
+    if (chartData.length > 0) {
+        createLineChart();
+    }
+    if (liveData) {
+        createDoughnutChart();
+    }
+    
+    setupEventSource();
+    
+    // Update interval
+    updateInterval = setInterval(() => {
+        if (!liveData) return;
+        
+        // Refresh historical data every minute
+        if (Date.now() % REFRESH_INTERVAL < UPDATE_INTERVAL) {
+            fetchHistoricalData();
+        }
+        
+        calculateStats();
+        updateDoughnutChart();
+    }, UPDATE_INTERVAL);
+    
+    cleanupFunctions.push(() => clearInterval(updateInterval));
 });
 
+// Cleanup
 onDestroy(() => {
-    if (updateInterval) clearInterval(updateInterval);
-    if (eventSource) eventSource.close();
-    if (lineChart) lineChart.destroy();
-    if (doughnutChart) doughnutChart.destroy();
+    cleanupFunctions.forEach(cleanup => cleanup());
+    lineChart?.destroy();
+    doughnutChart?.destroy();
 });
 
+// Reactive values
 $: progressPercentage = liveData ? (liveData.signatureCount / liveData.goal) * 100 : 0;
 $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
 </script>
@@ -529,7 +514,7 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
                 </span>
                 {#if lastUpdated}
                     <span class="text-sm">
-                        Last updated: {lastUpdated.toLocaleTimeString('en-US', { timeZone: 'Europe/Oslo' })} CEST
+                        Last updated: {formatTime(lastUpdated)} CEST
                     </span>
                 {/if}
             </div>
@@ -571,33 +556,19 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
 
         <!-- Stats Cards -->
         <section class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-12 animate-fadeInUp-delay-2">
-            <div class="stat-card glass rounded-2xl p-6 text-center relative">
-                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
-                <h3 class="text-sm text-slate-400 mb-4 font-medium">📈 Hourly Rate</h3>
-                <p class="text-3xl font-bold gradient-text mb-1">{stats.avgPerHour.toLocaleString()}</p>
-                <span class="text-slate-400 text-sm">signatures/hour</span>
-            </div>
-            
-            <div class="stat-card glass rounded-2xl p-6 text-center relative">
-                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
-                <h3 class="text-sm text-slate-400 mb-4 font-medium">🔥 Peak Hour</h3>
-                <p class="text-3xl font-bold gradient-text mb-1">{stats.peakHour}:00</p>
-                <span class="text-slate-400 text-sm">most active</span>
-            </div>
-            
-            <div class="stat-card glass rounded-2xl p-6 text-center relative">
-                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
-                <h3 class="text-sm text-slate-400 mb-4 font-medium">📊 Today Total</h3>
-                <p class="text-3xl font-bold gradient-text mb-1">{stats.totalToday.toLocaleString()}</p>
-                <span class="text-slate-400 text-sm">new signatures</span>
-            </div>
-            
-            <div class="stat-card glass rounded-2xl p-6 text-center relative">
-                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
-                <h3 class="text-sm text-slate-400 mb-4 font-medium">⏰ Est. Completion</h3>
-                <p class="text-2xl font-bold gradient-text mb-1">{stats.timeToGoal}</p>
-                <span class="text-slate-400 text-sm">at current rate</span>
-            </div>
+            {#each [
+                { icon: '📈', label: 'Hourly Rate', value: stats.avgPerHour.toLocaleString(), unit: 'signatures/hour' },
+                { icon: '🔥', label: 'Peak Hour', value: `${stats.peakHour}:00`, unit: 'most active' },
+                { icon: '📊', label: 'Today Total', value: stats.totalToday.toLocaleString(), unit: 'new signatures' },
+                { icon: '⏰', label: 'Est. Completion', value: stats.timeToGoal, unit: 'at current rate' }
+            ] as stat}
+                <div class="stat-card glass rounded-2xl p-6 text-center relative">
+                    <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
+                    <h3 class="text-sm text-slate-400 mb-4 font-medium">{stat.icon} {stat.label}</h3>
+                    <p class="text-3xl font-bold gradient-text mb-1">{stat.value}</p>
+                    <span class="text-slate-400 text-sm">{stat.unit}</span>
+                </div>
+            {/each}
         </section>
 
         <!-- Charts Grid -->
@@ -633,7 +604,7 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
                     {#each historicalData.slice(-15).reverse() as entry}
                         <div class="glass rounded-xl p-4 grid grid-cols-1 md:grid-cols-3 gap-2 md:gap-4 items-center hover:bg-white/10 transition-colors">
                             <span class="text-sm text-slate-400 font-mono">
-                                {new Date(entry.timestamp).toLocaleString('en-US', { timeZone: 'Europe/Oslo' })} CEST
+                                {formatDateTime(new Date(entry.timestamp))} CEST
                             </span>
                             <span class="font-semibold text-green-400">
                                 +{entry.change_amount.toLocaleString()} signatures
