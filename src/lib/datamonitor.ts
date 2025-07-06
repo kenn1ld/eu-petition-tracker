@@ -1,21 +1,19 @@
-// src/lib/dataMonitor.ts
+// src/lib/datamonitor.ts
+import { supabase } from './supabase.js';
+
 const EU_API = "https://eci.ec.europa.eu/045/public/api/report/progression";
 
 let cachedData: any = null;
 let lastSignatureCount: number | null = null;
 let monitorInterval: NodeJS.Timeout | null = null;
 
-// Elegant subscriber management with automatic cleanup
 class SubscriberManager {
     private subscribers = new Set<(data: any) => void>();
     
     subscribe(callback: (data: any) => void) {
         this.subscribers.add(callback);
-        
-        // Send current data immediately
         cachedData && callback(cachedData);
         
-        // Return unsubscribe function
         return () => {
             this.subscribers.delete(callback);
             console.log(`🗑️ Subscriber removed (${this.subscribers.size} remaining)`);
@@ -27,7 +25,6 @@ class SubscriberManager {
         
         console.log(`📡 Notifying ${this.subscribers.size} subscribers...`);
         
-        // Use iterator to safely remove failed callbacks during iteration
         for (const callback of this.subscribers) {
             try {
                 callback(data);
@@ -50,6 +47,26 @@ export const subscribeToDataChanges = (callback: (data: any) => void) =>
 
 export const getCurrentData = () => cachedData;
 
+async function saveToSupabase(data: any, changeAmount: number) {
+    try {
+        const { error } = await supabase
+            .from('signature_snapshots')
+            .insert({
+                signature_count: data.signatureCount,
+                goal: data.goal,
+                change_amount: changeAmount
+            });
+
+        if (error) {
+            console.error('Supabase save error:', error);
+        } else {
+            console.log('📊 Data saved to Supabase');
+        }
+    } catch (error) {
+        console.error('Failed to save to Supabase:', error);
+    }
+}
+
 async function checkForChanges() {
     try {
         const response = await fetch(EU_API);
@@ -60,8 +77,14 @@ async function checkForChanges() {
             return;
         }
         
-        // Data changed - update and notify
-        console.log(`🎉 Signatures changed: ${lastSignatureCount} → ${data.signatureCount}`);
+        // Calculate change amount
+        const changeAmount = lastSignatureCount ? 
+            data.signatureCount - lastSignatureCount : 0;
+        
+        console.log(`🎉 Signatures changed: ${lastSignatureCount} → ${data.signatureCount} (+${changeAmount})`);
+        
+        // Save to Supabase
+        await saveToSupabase(data, changeAmount);
         
         lastSignatureCount = data.signatureCount;
         cachedData = data;

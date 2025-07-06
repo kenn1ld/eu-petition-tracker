@@ -51,9 +51,10 @@
 		"vitest-browser-svelte": "^0.1.0"
 	},
 	"dependencies": {
-		"drizzle-orm": "^0.40.0",
-		"postgres": "^3.4.5",
+		"@supabase/supabase-js": "^2.50.3",
 		"cors": "^2.8.5",
-		"dotenv": "^16.4.7"
+		"dotenv": "^16.4.7",
+		"drizzle-orm": "^0.40.0",
+		"postgres": "^3.4.5"
 	}
 }

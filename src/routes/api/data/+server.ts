@@ -1,4 +1,4 @@
-// src/routes/api/live-data/+server.ts
+// src/routes/api/data/+server.ts
 import type { RequestHandler } from './$types';
 import { subscribeToDataChanges, startMonitoring } from '$lib/datamonitor';
 
