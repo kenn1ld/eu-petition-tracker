@@ -3,6 +3,9 @@ import { supabase, hasValidSupabase } from './supabase.js';
 
 const EU_API = "https://eci.ec.europa.eu/045/public/api/report/progression";
 
+// 🎯 MANUAL GOAL OVERRIDE - Change this value to update the goal
+const MANUAL_GOAL_OVERRIDE = 1500000;
+
 let cachedData: any = null;
 let lastSignatureCount: number | null = null;
 let monitorInterval: NodeJS.Timeout | null = null;
@@ -58,14 +61,14 @@ async function saveToSupabase(data: any, changeAmount: number) {
             .from('signature_snapshots')
             .insert({
                 signature_count: data.signatureCount,
-                goal: data.goal,
+                goal: data.goal, // This will now be the overridden goal
                 change_amount: changeAmount
             });
 
         if (error) {
             console.error('Supabase save error:', error);
         } else {
-            console.log('📊 Data saved to Supabase');
+            console.log('📊 Data saved to Supabase with overridden goal');
         }
     } catch (error) {
         console.error('Failed to save to Supabase:', error);
@@ -75,7 +78,15 @@ async function saveToSupabase(data: any, changeAmount: number) {
 async function checkForChanges() {
     try {
         const response = await fetch(EU_API);
-        const data = await response.json();
+        const rawData = await response.json();
+        
+        // 🎯 Override the goal with our manual value
+        const data = {
+            ...rawData,
+            goal: MANUAL_GOAL_OVERRIDE
+        };
+        
+        console.log(`🎯 Goal overridden: ${rawData.goal || 'undefined'} → ${MANUAL_GOAL_OVERRIDE}`);
         
         if (data.signatureCount === lastSignatureCount) {
             console.log(`No change: ${data.signatureCount} signatures (${subscriberManager.count} subscribers)`);
@@ -87,6 +98,7 @@ async function checkForChanges() {
             data.signatureCount - lastSignatureCount : 0;
         
         console.log(`🎉 Signatures changed: ${lastSignatureCount} → ${data.signatureCount} (+${changeAmount})`);
+        console.log(`📈 Progress: ${((data.signatureCount / data.goal) * 100).toFixed(2)}% of ${data.goal.toLocaleString()}`);
         
         // Save to Supabase
         await saveToSupabase(data, changeAmount);
@@ -105,6 +117,7 @@ export function startMonitoring(intervalMs = 1000) {
     if (monitorInterval) return;
     
     console.log(`🚀 Starting monitoring every ${intervalMs/1000} seconds...`);
+    console.log(`🎯 Goal manually set to: ${MANUAL_GOAL_OVERRIDE.toLocaleString()}`);
     
     checkForChanges();
     monitorInterval = setInterval(checkForChanges, intervalMs);
