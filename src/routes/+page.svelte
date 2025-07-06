@@ -1,4 +1,28 @@
-<!-- src/routes/+page.svelte -->
+<!-- Additional Stats Row -->
+        <section class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-12 animate-fadeInUp-delay-2">
+            <div class="stat-card glass rounded-2xl p-6 text-center relative">
+                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
+                <h3 class="text-sm text-slate-400 mb-4 font-medium">📊 Today Total</h3>
+                <p class="text-3xl font-bold gradient-text mb-1">{stats.totalToday.toLocaleString()}</p>
+                <span class="text-slate-400 text-sm">new signatures (24h)</span>
+            </div>
+            <div class="stat-card glass rounded-2xl p-6 text-center relative">
+                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
+                <h3 class="text-sm text-slate-400 mb-4 font-medium">🎯 Current Activity</h3>
+                <p class="text-3xl font-bold gradient-text mb-1">
+                    {#if stats.secRate > 0.1}
+                        High
+                    {:else if stats.minRate > 1}
+                        Medium
+                    {:else if stats.avgPerHour > 10}
+                        Low
+                    {:else}
+                        Minimal
+                    {/if}
+                </p>
+                <span class="text-slate-400 text-sm">signature activity level</span>
+            </div>
+        </section><!-- src/routes/+page.svelte -->
 <script lang="ts">
 import { onMount, onDestroy } from 'svelte';
 import { browser } from '$app/environment';
@@ -19,7 +43,10 @@ interface ChartDataPoint {
 }
 
 interface Stats {
+    secRate: number;
+    minRate: number;
     avgPerHour: number;
+    dailyRate: number;
     peakHour: number;
     totalToday: number;
     timeToGoal: string;
@@ -42,7 +69,10 @@ let eventSource: EventSource;
 let historicalData: HistoricalEntry[] = [];
 let chartData: ChartDataPoint[] = [];
 let stats: Stats = {
+    secRate: 0,
+    minRate: 0,
     avgPerHour: 0,
+    dailyRate: 0,
     peakHour: 0,
     totalToday: 0,
     timeToGoal: 'Calculating...'
@@ -137,38 +167,57 @@ function processChartData(): void {
         .slice(-MAX_CHART_POINTS);
 }
 
+function calculateSlidingWindowRate(timeWindowMs: number): number {
+    if (historicalData.length === 0) return 0;
+    
+    const now = Date.now();
+    const windowStart = now - timeWindowMs;
+    
+    // Get entries within the time window
+    const windowData = historicalData.filter(row => {
+        const entryTime = new Date(row.timestamp).getTime();
+        return entryTime > windowStart;
+    });
+    
+    if (windowData.length === 0) return 0;
+    
+    // Sum only positive changes (new signatures)
+    const totalChanges = windowData.reduce((sum, row) => {
+        return sum + Math.max(0, row.change_amount);
+    }, 0);
+    
+    // Calculate rate per unit time
+    const actualWindowMs = Math.min(timeWindowMs, now - new Date(windowData[0].timestamp).getTime());
+    return totalChanges > 0 ? (totalChanges / (actualWindowMs / 1000)) : 0;
+}
+
 function calculateStats(): void {
     if (historicalData.length === 0) return;
     
     const now = Date.now();
-    const dayAgo = now - (24 * 60 * 60 * 1000);
     
-    // Calculate today's signatures using CEST - get data from last 24 hours
+    // Sliding window rates
+    stats.secRate = calculateSlidingWindowRate(30 * 1000); // Last 30 seconds, rate per second
+    stats.minRate = calculateSlidingWindowRate(5 * 60 * 1000) * 60; // Last 5 minutes, rate per minute
+    stats.avgPerHour = calculateSlidingWindowRate(60 * 60 * 1000) * 3600; // Last 1 hour, rate per hour
+    stats.dailyRate = calculateSlidingWindowRate(24 * 60 * 60 * 1000) * 86400; // Last 24 hours, rate per day
+    
+    // Total signatures today (last 24 hours)
+    const dayAgo = now - (24 * 60 * 60 * 1000);
     const todayData = historicalData.filter(row => {
         const utcDate = new Date(row.timestamp);
         return utcDate.getTime() > dayAgo;
     });
     
-    // Calculate total change amount for today (sum of all positive changes)
-    const totalChanges = todayData.reduce((sum, row) => {
-        // Only count positive changes (new signatures)
+    stats.totalToday = todayData.reduce((sum, row) => {
         return sum + Math.max(0, row.change_amount);
     }, 0);
-    
-    // Calculate actual hours of data we have
-    const actualHours = todayData.length > 0 ? 
-        Math.max(1, (now - new Date(todayData[0].timestamp).getTime()) / (1000 * 60 * 60)) : 1;
-    
-    // Calculate hourly rate based on actual time period
-    stats.avgPerHour = totalChanges > 0 ? Math.round(totalChanges / actualHours) : 0;
-    stats.totalToday = totalChanges;
     
     // Find peak hour from recent data using CEST
     const hourlyData: Record<number, number> = {};
     todayData.forEach(row => {
         const cestDate = toCEST(new Date(row.timestamp));
         const hour = cestDate.getHours();
-        // Only count positive changes for peak hour calculation
         if (row.change_amount > 0) {
             hourlyData[hour] = (hourlyData[hour] || 0) + row.change_amount;
         }
@@ -184,17 +233,51 @@ function calculateStats(): void {
     });
     stats.peakHour = peakHour;
     
-    // Estimate time to goal - use a better average based on recent activity
-    if (liveData && stats.avgPerHour > 0) {
+    // Estimate time to goal using the most appropriate rate
+    if (liveData) {
         const remaining = liveData.goal - liveData.signatureCount;
-        const hoursToGoal = remaining / stats.avgPerHour;
+        let rateToUse = 0;
+        let timeUnit = '';
         
-        if (hoursToGoal < 1) {
-            stats.timeToGoal = `${Math.round(hoursToGoal * 60)} minutes`;
-        } else if (hoursToGoal < 24) {
-            stats.timeToGoal = `${Math.round(hoursToGoal)} hours`;
+        // Choose the most appropriate rate based on activity level
+        if (stats.secRate > 0.1) {
+            // High activity - use per-second rate
+            rateToUse = stats.secRate;
+            const secondsToGoal = remaining / rateToUse;
+            if (secondsToGoal < 60) {
+                stats.timeToGoal = `${Math.round(secondsToGoal)} seconds`;
+            } else if (secondsToGoal < 3600) {
+                stats.timeToGoal = `${Math.round(secondsToGoal / 60)} minutes`;
+            } else {
+                stats.timeToGoal = `${Math.round(secondsToGoal / 3600)} hours`;
+            }
+        } else if (stats.minRate > 0.1) {
+            // Medium activity - use per-minute rate
+            rateToUse = stats.minRate / 60; // Convert to per-second
+            const secondsToGoal = remaining / rateToUse;
+            const minutesToGoal = secondsToGoal / 60;
+            if (minutesToGoal < 60) {
+                stats.timeToGoal = `${Math.round(minutesToGoal)} minutes`;
+            } else if (minutesToGoal < 1440) {
+                stats.timeToGoal = `${Math.round(minutesToGoal / 60)} hours`;
+            } else {
+                stats.timeToGoal = `${Math.round(minutesToGoal / 1440)} days`;
+            }
+        } else if (stats.avgPerHour > 0.1) {
+            // Low activity - use hourly rate
+            rateToUse = stats.avgPerHour / 3600; // Convert to per-second
+            const hoursToGoal = remaining / stats.avgPerHour;
+            if (hoursToGoal < 24) {
+                stats.timeToGoal = `${Math.round(hoursToGoal)} hours`;
+            } else {
+                stats.timeToGoal = `${Math.round(hoursToGoal / 24)} days`;
+            }
+        } else if (stats.dailyRate > 0) {
+            // Very low activity - use daily rate
+            const daysToGoal = remaining / stats.dailyRate;
+            stats.timeToGoal = `${Math.round(daysToGoal)} days`;
         } else {
-            stats.timeToGoal = `${Math.round(hoursToGoal / 24)} days`;
+            stats.timeToGoal = 'No recent activity';
         }
     } else {
         stats.timeToGoal = 'Calculating...';
@@ -596,18 +679,20 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
         {/if}
 
         <!-- Stats Cards -->
-        <section class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-12 animate-fadeInUp-delay-2">
+        <section class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-6 mb-12 animate-fadeInUp-delay-2">
             {#each [
-                { icon: '📈', label: 'Hourly Rate', value: stats.avgPerHour.toLocaleString(), unit: 'signatures/hour' },
-                { icon: '🔥', label: 'Peak Hour', value: `${stats.peakHour}:00`, unit: 'most active' },
-                { icon: '📊', label: 'Today Total', value: stats.totalToday.toLocaleString(), unit: 'new signatures' },
+                { icon: '⚡', label: 'Per Second', value: stats.secRate.toFixed(2), unit: 'sig/sec (30s window)' },
+                { icon: '📈', label: 'Per Minute', value: stats.minRate.toFixed(1), unit: 'sig/min (5m window)' },
+                { icon: '🕐', label: 'Per Hour', value: Math.round(stats.avgPerHour).toLocaleString(), unit: 'sig/hour (1h window)' },
+                { icon: '📅', label: 'Per Day', value: Math.round(stats.dailyRate).toLocaleString(), unit: 'sig/day (24h window)' },
+                { icon: '🔥', label: 'Peak Hour', value: `${stats.peakHour}:00`, unit: 'most active today' },
                 { icon: '⏰', label: 'Est. Completion', value: stats.timeToGoal, unit: 'at current rate' }
             ] as stat}
-                <div class="stat-card glass rounded-2xl p-6 text-center relative">
+                <div class="stat-card glass rounded-2xl p-4 text-center relative">
                     <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
-                    <h3 class="text-sm text-slate-400 mb-4 font-medium">{stat.icon} {stat.label}</h3>
-                    <p class="text-3xl font-bold gradient-text mb-1">{stat.value}</p>
-                    <span class="text-slate-400 text-sm">{stat.unit}</span>
+                    <h3 class="text-xs text-slate-400 mb-3 font-medium">{stat.icon} {stat.label}</h3>
+                    <p class="text-2xl font-bold gradient-text mb-1">{stat.value}</p>
+                    <span class="text-xs text-slate-400">{stat.unit}</span>
                 </div>
             {/each}
         </section>
