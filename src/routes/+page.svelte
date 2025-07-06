@@ -46,10 +46,17 @@ async function fetchHistoricalData() {
         const result = await response.json();
         
         if (result.data) {
-            historicalData = result.data;
-            processChartData();
-            calculateStats();
-            updateCharts();
+            // Only update if we have new data or this is the first load
+            const isFirstLoad = historicalData.length === 0;
+            const hasNewData = result.data.length > historicalData.length;
+            
+            if (isFirstLoad || hasNewData) {
+                historicalData = result.data;
+                processChartData();
+                calculateStats();
+                updateCharts();
+                console.log(`📊 Historical data updated: ${result.data.length} entries`);
+            }
         }
     } catch (error) {
         console.error('Failed to fetch historical data:', error);
@@ -350,12 +357,15 @@ onMount(() => {
                             historicalData = historicalData.slice(-1000);
                         }
                         
+                        // Only reprocess chart data when we actually add new data
                         processChartData();
+                        calculateStats();
+                        updateCharts();
+                    } else {
+                        // Just update stats and doughnut chart for existing data
+                        calculateStats();
+                        updateDoughnutChart();
                     }
-                    
-                    // Update charts and stats immediately
-                    calculateStats();
-                    updateCharts();
                 }
             };
 
@@ -375,9 +385,9 @@ onMount(() => {
                     fetchHistoricalData();
                 }
                 
-                // Update charts and stats every second
+                // Only update stats and doughnut chart every second, not the line chart
                 calculateStats();
-                updateCharts();
+                updateDoughnutChart();
             }
         }, 1000);
     })();
