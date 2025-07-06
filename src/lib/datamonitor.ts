@@ -1,5 +1,5 @@
 // src/lib/datamonitor.ts
-import { supabase } from './supabase.js';
+import { supabase, hasValidSupabase } from './supabase.js';
 
 const EU_API = "https://eci.ec.europa.eu/045/public/api/report/progression";
 
@@ -48,6 +48,11 @@ export const subscribeToDataChanges = (callback: (data: any) => void) =>
 export const getCurrentData = () => cachedData;
 
 async function saveToSupabase(data: any, changeAmount: number) {
+    if (!hasValidSupabase) {
+        console.log('📊 Skipping Supabase save (build mode)');
+        return;
+    }
+
     try {
         const { error } = await supabase
             .from('signature_snapshots')
