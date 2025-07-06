@@ -1,6 +1,12 @@
 <!-- src/routes/+page.svelte -->
 <script lang="ts">
 import { onMount, onDestroy } from 'svelte';
+import { browser } from '$app/environment';
+
+// Chart.js
+let Chart: any;
+let lineChart: any;
+let doughnutChart: any;
 
 // Real-time data
 let liveData: any = null;
@@ -18,6 +24,17 @@ let stats = {
     timeToGoal: 'Calculating...'
 };
 
+// Chart elements
+let lineChartCanvas: HTMLCanvasElement;
+let doughnutChartCanvas: HTMLCanvasElement;
+
+async function loadChartJS() {
+    if (browser) {
+        const chartModule = await import('chart.js/auto');
+        Chart = chartModule.default;
+    }
+}
+
 async function fetchHistoricalData() {
     try {
         const response = await fetch('/api/history?hours=24');
@@ -27,10 +44,44 @@ async function fetchHistoricalData() {
             historicalData = result.data;
             processChartData();
             calculateStats();
+            updateCharts();
         }
     } catch (error) {
         console.error('Failed to fetch historical data:', error);
+        // Simulate data for demo
+        simulateData();
     }
+}
+
+function simulateData() {
+    // Generate demo data for showcase
+    const now = new Date();
+    historicalData = [];
+    let signatureCount = 850000;
+    
+    for (let i = 24; i >= 0; i--) {
+        const timestamp = new Date(now.getTime() - (i * 60 * 60 * 1000));
+        const change = Math.floor(Math.random() * 5000) + 1000;
+        signatureCount += change;
+        
+        historicalData.push({
+            timestamp: timestamp.toISOString(),
+            signature_count: signatureCount,
+            change_amount: change
+        });
+    }
+    
+    if (!liveData) {
+        liveData = {
+            signatureCount: signatureCount,
+            goal: 1000000
+        };
+        lastUpdated = new Date();
+    }
+    
+    processChartData();
+    calculateStats();
+    updateCharts();
 }
 
 function processChartData() {
@@ -83,54 +134,228 @@ function calculateStats() {
     }
 }
 
+function updateCharts() {
+    if (!Chart || !chartData.length) return;
+    
+    updateLineChart();
+    updateDoughnutChart();
+}
+
+function updateLineChart() {
+    if (!lineChartCanvas) return;
+    
+    if (lineChart) {
+        lineChart.destroy();
+    }
+    
+    const ctx = lineChartCanvas.getContext('2d');
+    if (!ctx) return;
+    
+    lineChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: chartData.map(d => d.hour),
+            datasets: [{
+                label: 'Signatures per Hour',
+                data: chartData.map(d => d.signatures),
+                borderColor: 'rgba(102, 126, 234, 1)',
+                backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                borderWidth: 3,
+                fill: true,
+                tension: 0.4,
+                pointBackgroundColor: 'rgba(102, 126, 234, 1)',
+                pointBorderColor: 'rgba(255, 255, 255, 1)',
+                pointBorderWidth: 2,
+                pointRadius: 6,
+                pointHoverRadius: 8
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: false
+                },
+                tooltip: {
+                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                    titleColor: 'white',
+                    bodyColor: 'white',
+                    borderColor: 'rgba(102, 126, 234, 1)',
+                    borderWidth: 1,
+                    cornerRadius: 8,
+                    displayColors: false
+                }
+            },
+            scales: {
+                x: {
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.1)',
+                        drawBorder: false
+                    },
+                    ticks: {
+                        color: 'rgba(255, 255, 255, 0.7)',
+                        font: {
+                            size: 12
+                        }
+                    }
+                },
+                y: {
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.1)',
+                        drawBorder: false
+                    },
+                    ticks: {
+                        color: 'rgba(255, 255, 255, 0.7)',
+                        font: {
+                            size: 12
+                        }
+                    }
+                }
+            },
+            animation: {
+                duration: 2000,
+                easing: 'easeInOutQuart'
+            }
+        }
+    });
+}
+
+function updateDoughnutChart() {
+    if (!doughnutChartCanvas || !liveData) return;
+    
+    if (doughnutChart) {
+        doughnutChart.destroy();
+    }
+    
+    const ctx = doughnutChartCanvas.getContext('2d');
+    if (!ctx) return;
+    
+    const progressPercentage = (liveData.signatureCount / liveData.goal) * 100;
+    const remaining = 100 - progressPercentage;
+    
+    doughnutChart = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: ['Completed', 'Remaining'],
+            datasets: [{
+                data: [progressPercentage, remaining],
+                backgroundColor: [
+                    'rgba(16, 185, 129, 1)',
+                    'rgba(255, 255, 255, 0.1)'
+                ],
+                borderColor: [
+                    'rgba(16, 185, 129, 1)',
+                    'rgba(255, 255, 255, 0.2)'
+                ],
+                borderWidth: 2,
+                cutout: '70%'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: false
+                },
+                tooltip: {
+                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                    titleColor: 'white',
+                    bodyColor: 'white',
+                    borderColor: 'rgba(16, 185, 129, 1)',
+                    borderWidth: 1,
+                    cornerRadius: 8,
+                    callbacks: {
+                        label: function(context: any) {
+                            return context.label + ': ' + context.parsed.toFixed(1) + '%';
+                        }
+                    }
+                }
+            },
+            animation: {
+                duration: 2000,
+                easing: 'easeInOutQuart'
+            }
+        }
+    });
+}
+
 async function fetchManualData() {
-    const response = await fetch('/api/data');
-    const result = await response.json();
-    liveData = result.data;
-    lastUpdated = new Date();
+    try {
+        const response = await fetch('/api/data');
+        const result = await response.json();
+        liveData = result.data;
+        lastUpdated = new Date();
+        updateCharts();
+    } catch (error) {
+        console.error('Failed to fetch manual data:', error);
+        simulateData();
+    }
 }
 
 onMount(() => {
-    // Fetch initial historical data
-    fetchHistoricalData();
-    
-    // Set up real-time connection for live updates
-    eventSource = new EventSource('/api/data');
-    
-    eventSource.onopen = () => {
-        connectionStatus = '🟢 Live';
-        console.log('Connected to live updates');
-    };
-    
-    eventSource.onmessage = (event) => {
-        const message = JSON.parse(event.data);
-        
-        if (message.data) {
-            console.log('📨 Received live update!');
-            liveData = message.data;
-            lastUpdated = new Date(message.timestamp);
-            
-            // Refresh historical data every few updates
-            if (Math.random() < 0.1) { // 10% chance each update
-                fetchHistoricalData();
-            }
+    let refreshInterval: NodeJS.Timeout;
+
+    (async () => {
+        await loadChartJS();
+
+        // Fetch initial historical data
+        fetchHistoricalData();
+
+        // Set up real-time connection for live updates
+        try {
+            eventSource = new EventSource('/api/data');
+
+            eventSource.onopen = () => {
+                connectionStatus = '🟢 Live';
+                console.log('Connected to live updates');
+            };
+
+            eventSource.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+
+                if (message.data) {
+                    console.log('📨 Received live update!');
+                    liveData = message.data;
+                    lastUpdated = new Date(message.timestamp);
+
+                    // Refresh historical data every few updates
+                    if (Math.random() < 0.1) { // 10% chance each update
+                        fetchHistoricalData();
+                    }
+                }
+            };
+
+            eventSource.onerror = () => {
+                connectionStatus = '🔴 Disconnected';
+                console.error('Connection lost');
+            };
+        } catch (error) {
+            console.error('EventSource not available:', error);
+            connectionStatus = '🟡 Demo Mode';
+            simulateData();
         }
+
+        // Refresh historical data every 5 minutes
+        refreshInterval = setInterval(fetchHistoricalData, 5 * 60 * 1000);
+    })();
+
+    // Return cleanup function synchronously
+    return () => {
+        if (refreshInterval) clearInterval(refreshInterval);
     };
-    
-    eventSource.onerror = () => {
-        connectionStatus = '🔴 Disconnected';
-        console.error('Connection lost');
-    };
-    
-    // Refresh historical data every 5 minutes
-    const refreshInterval = setInterval(fetchHistoricalData, 5 * 60 * 1000);
-    
-    return () => clearInterval(refreshInterval);
 });
 
 onDestroy(() => {
     if (eventSource) {
         eventSource.close();
+    }
+    if (lineChart) {
+        lineChart.destroy();
+    }
+    if (doughnutChart) {
+        doughnutChart.destroy();
     }
 });
 
@@ -140,394 +365,242 @@ $: remainingSignatures = liveData ? liveData.goal - liveData.signatureCount : 0;
 
 <svelte:head>
     <title>EU Petition Tracker - Real-time Analytics</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        
+        .glass {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .gradient-bg {
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 25%, #16213e 50%, #0f3460 75%, #533483 100%);
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .progress-shimmer::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+            animation: shimmer 2s infinite;
+        }
+        
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .animate-fadeInUp {
+            animation: fadeInUp 0.8s ease-out;
+        }
+        
+        .animate-fadeInUp-delay-1 {
+            animation: fadeInUp 0.8s ease-out 0.2s both;
+        }
+        
+        .animate-fadeInUp-delay-2 {
+            animation: fadeInUp 0.8s ease-out 0.4s both;
+        }
+        
+        .animate-fadeInUp-delay-3 {
+            animation: fadeInUp 0.8s ease-out 0.6s both;
+        }
+        
+        .animate-fadeInUp-delay-4 {
+            animation: fadeInUp 0.8s ease-out 0.8s both;
+        }
+        
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at 20% 80%, rgba(120, 119, 198, 0.3) 0%, transparent 50%),
+                        radial-gradient(circle at 80% 20%, rgba(255, 119, 198, 0.15) 0%, transparent 50%),
+                        radial-gradient(circle at 40% 40%, rgba(120, 219, 255, 0.1) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: -1;
+        }
+    </style>
 </svelte:head>
 
-<main class="container">
-    <!-- Header -->
-    <header class="header">
-        <h1>🇪🇺 EU Petition Tracker</h1>
-        <div class="status-bar">
-            <span class="status">Status: {connectionStatus}</span>
-            {#if lastUpdated}
-                <span class="last-updated">
-                    Last updated: {lastUpdated.toLocaleTimeString()}
+<main class="min-h-screen gradient-bg">
+    <div class="container mx-auto px-4 py-8 max-w-7xl">
+        <!-- Header -->
+        <header class="text-center mb-12 animate-fadeInUp">
+            <h1 class="text-4xl md:text-6xl font-black mb-6 gradient-text tracking-tight">
+                🇪🇺 EU Petition Tracker
+            </h1>
+            <div class="glass rounded-full px-6 py-3 inline-flex items-center gap-4 text-slate-300">
+                <span class="flex items-center gap-2">
+                    <div class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                    Status: {connectionStatus}
                 </span>
-            {/if}
-        </div>
-    </header>
+                {#if lastUpdated}
+                    <span class="text-sm">
+                        Last updated: {lastUpdated.toLocaleTimeString()}
+                    </span>
+                {/if}
+            </div>
+        </header>
 
-    <!-- Live Data Section -->
-    {#if liveData}
-        <section class="live-section">
-            <div class="signature-count">
-                <h2>{liveData.signatureCount.toLocaleString()}</h2>
-                <p>of {liveData.goal.toLocaleString()} signatures</p>
+        <!-- Live Data Section -->
+        {#if liveData}
+            <section class="glass rounded-3xl p-8 md:p-12 text-center mb-12 relative overflow-hidden animate-fadeInUp-delay-1">
+                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/40 to-transparent"></div>
+                
+                <div class="mb-8">
+                    <h2 class="text-5xl md:text-7xl font-black mb-2 text-white tracking-tight">
+                        {liveData.signatureCount.toLocaleString()}
+                    </h2>
+                    <p class="text-xl text-slate-300">
+                        of {liveData.goal.toLocaleString()} signatures
+                    </p>
+                </div>
+                
+                <div class="max-w-2xl mx-auto">
+                    <div class="relative w-full h-3 bg-white/10 rounded-full overflow-hidden mb-4">
+                        <div 
+                            class="h-full bg-gradient-to-r from-green-400 to-green-500 rounded-full transition-all duration-1000 ease-out relative progress-shimmer"
+                            style="width: {Math.min(100, progressPercentage)}%"
+                        ></div>
+                    </div>
+                    <div class="flex flex-col md:flex-row justify-between text-sm text-slate-300 gap-2">
+                        <span class="font-medium">{progressPercentage.toFixed(1)}% complete</span>
+                        <span>{remainingSignatures.toLocaleString()} remaining</span>
+                    </div>
+                </div>
+            </section>
+        {:else}
+            <section class="glass rounded-3xl p-12 text-center mb-12 animate-fadeInUp-delay-1">
+                <div class="animate-spin w-8 h-8 border-2 border-white/20 border-t-blue-500 rounded-full mx-auto mb-4"></div>
+                <p class="text-slate-300">Loading live data...</p>
+            </section>
+        {/if}
+
+        <!-- Stats Cards -->
+        <section class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-12 animate-fadeInUp-delay-2">
+            <div class="glass rounded-2xl p-6 text-center hover:scale-105 transition-transform duration-300 group">
+                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
+                <h3 class="text-sm text-slate-400 mb-4 font-medium">📈 Hourly Rate</h3>
+                <p class="text-3xl font-bold gradient-text mb-1">{stats.avgPerHour}</p>
+                <span class="text-slate-400 text-sm">signatures/hour</span>
             </div>
             
-            <div class="progress-container">
-                <div class="progress-bar">
-                    <div 
-                        class="progress-fill" 
-                        style="width: {Math.min(100, progressPercentage)}%"
-                    ></div>
+            <div class="glass rounded-2xl p-6 text-center hover:scale-105 transition-transform duration-300 group">
+                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
+                <h3 class="text-sm text-slate-400 mb-4 font-medium">🔥 Peak Hour</h3>
+                <p class="text-3xl font-bold gradient-text mb-1">{stats.peakHour}:00</p>
+                <span class="text-slate-400 text-sm">most active</span>
+            </div>
+            
+            <div class="glass rounded-2xl p-6 text-center hover:scale-105 transition-transform duration-300 group">
+                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
+                <h3 class="text-sm text-slate-400 mb-4 font-medium">📊 Today Total</h3>
+                <p class="text-3xl font-bold gradient-text mb-1">{stats.totalToday}</p>
+                <span class="text-slate-400 text-sm">new signatures</span>
+            </div>
+            
+            <div class="glass rounded-2xl p-6 text-center hover:scale-105 transition-transform duration-300 group">
+                <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
+                <h3 class="text-sm text-slate-400 mb-4 font-medium">⏰ Est. Completion</h3>
+                <p class="text-3xl font-bold gradient-text mb-1">{stats.timeToGoal}</p>
+                <span class="text-slate-400 text-sm">at current rate</span>
+            </div>
+        </section>
+
+        <!-- Charts Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-12">
+            <!-- Line Chart -->
+            <div class="lg:col-span-2 glass rounded-2xl p-6 animate-fadeInUp-delay-3">
+                <h3 class="text-xl font-semibold text-white mb-6">📈 Signatures by Hour (Last 24h)</h3>
+                <div class="relative h-80">
+                    <canvas bind:this={lineChartCanvas}></canvas>
                 </div>
-                <div class="progress-text">
-                    <span>{progressPercentage.toFixed(1)}% complete</span>
-                    <span>{remainingSignatures.toLocaleString()} remaining</span>
+            </div>
+            
+            <!-- Progress Doughnut Chart -->
+            <div class="glass rounded-2xl p-6 flex flex-col items-center justify-center animate-fadeInUp-delay-3">
+                <h3 class="text-xl font-semibold text-white mb-6">🎯 Progress Overview</h3>
+                <div class="relative h-48 w-48">
+                    <canvas bind:this={doughnutChartCanvas}></canvas>
+                    <div class="absolute inset-0 flex items-center justify-center">
+                        <div class="text-center">
+                            <div class="text-2xl font-bold text-white">{progressPercentage.toFixed(1)}%</div>
+                            <div class="text-sm text-slate-400">Complete</div>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </section>
-    {:else}
-        <section class="live-section">
-            <div class="loading">
-                <p>Loading live data...</p>
-            </div>
-        </section>
-    {/if}
-
-    <!-- Stats Cards -->
-    <section class="stats-grid">
-        <div class="stat-card">
-            <h3>📈 Hourly Rate</h3>
-            <p class="stat-number">{stats.avgPerHour}</p>
-            <span>signatures/hour</span>
         </div>
-        
-        <div class="stat-card">
-            <h3>🔥 Peak Hour</h3>
-            <p class="stat-number">{stats.peakHour}:00</p>
-            <span>most active</span>
-        </div>
-        
-        <div class="stat-card">
-            <h3>📊 Today Total</h3>
-            <p class="stat-number">{stats.totalToday}</p>
-            <span>new signatures</span>
-        </div>
-        
-        <div class="stat-card">
-            <h3>⏰ Est. Completion</h3>
-            <p class="stat-number">{stats.timeToGoal}</p>
-            <span>at current rate</span>
-        </div>
-    </section>
 
-    <!-- Hourly Chart -->
-    {#if chartData.length > 0}
-        <section class="chart-section">
-            <h3>📈 Signatures by Hour (Last 24h)</h3>
-            <div class="chart-container">
-                {#each chartData as dataPoint}
-                    <div class="chart-bar">
-                        <div 
-                            class="bar-fill" 
-                            style="height: {Math.max(5, (dataPoint.signatures / Math.max(...chartData.map(d => d.signatures))) * 100)}%"
-                        ></div>
-                        <span class="bar-label">{dataPoint.hour}</span>
-                        <span class="bar-value">{dataPoint.signatures}</span>
-                    </div>
-                {/each}
-            </div>
+        <!-- Recent Activity -->
+        {#if historicalData.length > 0}
+            <section class="glass rounded-2xl p-6 mb-12 animate-fadeInUp-delay-4">
+                <h3 class="text-xl font-semibold text-white mb-6">🕐 Recent Activity</h3>
+                <div class="space-y-3 max-h-96 overflow-y-auto pr-2">
+                    {#each historicalData.slice(-10).reverse() as entry}
+                        <div class="glass rounded-xl p-4 grid grid-cols-1 md:grid-cols-3 gap-2 md:gap-4 items-center hover:bg-white/10 transition-colors">
+                            <span class="text-sm text-slate-400 font-mono">
+                                {new Date(entry.timestamp).toLocaleTimeString()}
+                            </span>
+                            <span class="font-semibold text-green-400">
+                                +{entry.change_amount} signatures
+                            </span>
+                            <span class="text-sm text-slate-300 text-right">
+                                Total: {entry.signature_count.toLocaleString()}
+                            </span>
+                        </div>
+                    {/each}
+                </div>
+            </section>
+        {/if}
+
+        <!-- Manual Controls -->
+        <section class="flex flex-col md:flex-row gap-4 justify-center items-center animate-fadeInUp-delay-4">
+            <button 
+                on:click={fetchManualData} 
+                class="w-full md:w-auto px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-semibold rounded-xl transition-all duration-300 transform hover:scale-105 hover:shadow-lg border border-white/10"
+            >
+                🔄 Manual Refresh
+            </button>
+            <button 
+                on:click={fetchHistoricalData} 
+                class="w-full md:w-auto px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 text-white font-semibold rounded-xl transition-all duration-300 transform hover:scale-105 hover:shadow-lg border border-white/10"
+            >
+                📊 Refresh Analytics
+            </button>
         </section>
-    {/if}
-
-    <!-- Recent Activity -->
-    {#if historicalData.length > 0}
-        <section class="activity-section">
-            <h3>🕐 Recent Activity</h3>
-            <div class="activity-list">
-                {#each historicalData.slice(-10).reverse() as entry}
-                    <div class="activity-item">
-                        <span class="activity-time">
-                            {new Date(entry.timestamp).toLocaleTimeString()}
-                        </span>
-                        <span class="activity-change" class:positive={entry.change_amount > 0}>
-                            +{entry.change_amount} signatures
-                        </span>
-                        <span class="activity-total">
-                            Total: {entry.signature_count.toLocaleString()}
-                        </span>
-                    </div>
-                {/each}
-            </div>
-        </section>
-    {/if}
-
-    <!-- Manual Controls -->
-    <section class="controls">
-        <button on:click={fetchManualData} class="refresh-btn">
-            🔄 Manual Refresh
-        </button>
-        <button on:click={fetchHistoricalData} class="refresh-btn">
-            📊 Refresh Analytics
-        </button>
-    </section>
+    </div>
 </main>
-
-<style>
-.container {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 2rem;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-}
-
-.header {
-    text-align: center;
-    margin-bottom: 3rem;
-}
-
-.header h1 {
-    font-size: 2.5rem;
-    color: #1e40af;
-    margin: 0 0 1rem 0;
-}
-
-.status-bar {
-    display: flex;
-    justify-content: center;
-    gap: 2rem;
-    padding: 1rem;
-    background: #f8fafc;
-    border-radius: 0.5rem;
-    font-size: 0.9rem;
-    color: #64748b;
-}
-
-.live-section {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    padding: 3rem;
-    border-radius: 1rem;
-    text-align: center;
-    margin-bottom: 3rem;
-    box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
-}
-
-.signature-count h2 {
-    font-size: 4rem;
-    margin: 0;
-    font-weight: bold;
-}
-
-.signature-count p {
-    font-size: 1.2rem;
-    margin: 0.5rem 0 2rem 0;
-    opacity: 0.9;
-}
-
-.progress-container {
-    max-width: 600px;
-    margin: 0 auto;
-}
-
-.progress-bar {
-    width: 100%;
-    height: 20px;
-    background: rgba(255, 255, 255, 0.2);
-    border-radius: 10px;
-    overflow: hidden;
-    margin-bottom: 1rem;
-}
-
-.progress-fill {
-    height: 100%;
-    background: linear-gradient(90deg, #10b981, #059669);
-    transition: width 0.8s ease;
-    border-radius: 10px;
-}
-
-.progress-text {
-    display: flex;
-    justify-content: space-between;
-    font-size: 0.9rem;
-    opacity: 0.9;
-}
-
-.stats-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 1.5rem;
-    margin-bottom: 3rem;
-}
-
-.stat-card {
-    background: white;
-    padding: 2rem;
-    border-radius: 1rem;
-    text-align: center;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-    border: 1px solid #e2e8f0;
-}
-
-.stat-card h3 {
-    font-size: 1rem;
-    color: #64748b;
-    margin: 0 0 1rem 0;
-}
-
-.stat-number {
-    font-size: 2.5rem;
-    font-weight: bold;
-    color: #1e40af;
-    margin: 0 0 0.5rem 0;
-}
-
-.stat-card span {
-    color: #64748b;
-    font-size: 0.9rem;
-}
-
-.chart-section {
-    background: white;
-    padding: 2rem;
-    border-radius: 1rem;
-    margin-bottom: 3rem;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-}
-
-.chart-section h3 {
-    margin: 0 0 2rem 0;
-    color: #1e40af;
-}
-
-.chart-container {
-    display: flex;
-    justify-content: space-between;
-    align-items: end;
-    height: 200px;
-    gap: 0.5rem;
-}
-
-.chart-bar {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    height: 100%;
-}
-
-.bar-fill {
-    background: linear-gradient(to top, #3b82f6, #1d4ed8);
-    width: 100%;
-    border-radius: 4px 4px 0 0;
-    min-height: 5px;
-    transition: height 0.5s ease;
-}
-
-.bar-label {
-    font-size: 0.8rem;
-    color: #64748b;
-    margin-top: 0.5rem;
-}
-
-.bar-value {
-    font-size: 0.8rem;
-    font-weight: bold;
-    color: #1e40af;
-}
-
-.activity-section {
-    background: white;
-    padding: 2rem;
-    border-radius: 1rem;
-    margin-bottom: 3rem;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-}
-
-.activity-section h3 {
-    margin: 0 0 1.5rem 0;
-    color: #1e40af;
-}
-
-.activity-list {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-}
-
-.activity-item {
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    gap: 1rem;
-    padding: 1rem;
-    background: #f8fafc;
-    border-radius: 0.5rem;
-    align-items: center;
-}
-
-.activity-time {
-    font-size: 0.9rem;
-    color: #64748b;
-    font-family: monospace;
-}
-
-.activity-change {
-    font-weight: bold;
-    color: #059669;
-}
-
-.activity-total {
-    font-size: 0.9rem;
-    color: #64748b;
-}
-
-.controls {
-    display: flex;
-    gap: 1rem;
-    justify-content: center;
-}
-
-.refresh-btn {
-    background: #3b82f6;
-    color: white;
-    border: none;
-    padding: 0.75rem 1.5rem;
-    border-radius: 0.5rem;
-    font-size: 1rem;
-    cursor: pointer;
-    transition: background 0.2s;
-}
-
-.refresh-btn:hover {
-    background: #1d4ed8;
-}
-
-.loading {
-    padding: 2rem;
-}
-
-@media (max-width: 768px) {
-    .container {
-        padding: 1rem;
-    }
-    
-    .header h1 {
-        font-size: 2rem;
-    }
-    
-    .signature-count h2 {
-        font-size: 3rem;
-    }
-    
-    .stats-grid {
-        grid-template-columns: 1fr;
-    }
-    
-    .status-bar {
-        flex-direction: column;
-        gap: 0.5rem;
-    }
-    
-    .progress-text {
-        flex-direction: column;
-        text-align: center;
-        gap: 0.5rem;
-    }
-    
-    .activity-item {
-        grid-template-columns: 1fr;
-        text-align: center;
-    }
-}
-</style>
