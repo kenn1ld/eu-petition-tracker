@@ -102,16 +102,28 @@ async function fetchStats(): Promise<void> {
             return;
         }
         
-        stats = result;
-        console.log('📊 Stats updated from server:', stats);
+        // Only update signature count if we don't have fresher live data
+        const hasNewerLiveData = liveData && liveData.signatureCount >= result.currentSignatures;
         
-        // Update live data if we have current signature info
-        if (result.currentSignatures && result.goal) {
-            liveData = {
-                signatureCount: result.currentSignatures,
-                goal: result.goal
-            };
+        if (!hasNewerLiveData) {
+            stats.currentSignatures = result.currentSignatures;
+            stats.goal = result.goal;
         }
+        
+        // Always update the calculated rates and other stats
+        stats.secRate = result.secRate;
+        stats.minRate = result.minRate;
+        stats.hourlyRate = result.hourlyRate;
+        stats.dailyRate = result.dailyRate;
+        stats.peakHour = result.peakHour;
+        stats.totalToday = result.totalToday;
+        stats.timeToGoal = result.timeToGoal;
+        stats.activityLevel = result.activityLevel;
+        
+        console.log('📊 Stats updated from server:', {
+            rates: { sec: result.secRate, min: result.minRate, hour: result.hourlyRate, day: result.dailyRate },
+            signatures: { server: result.currentSignatures, live: liveData?.signatureCount, using: hasNewerLiveData ? 'live' : 'server' }
+        });
         
     } catch (error) {
         console.error('Failed to fetch stats:', error);

@@ -2,6 +2,7 @@
 import type { RequestHandler } from '@sveltejs/kit';
 import { supabase } from '$lib/supabase.js';
 import { applyGoalOverride } from '$lib/config.js';
+import { getCurrentData } from '$lib/datamonitor.js';
 
 interface StatsResponse {
     secRate: number;
@@ -46,6 +47,9 @@ function toCEST(date: Date): Date {
 
 export const GET: RequestHandler = async () => {
     try {
+        // Get current live data from datamonitor (most up-to-date)
+        const currentLiveData = getCurrentData();
+        
         // Get all recent data (last 25 hours to ensure we have complete 24h data)
         const hoursAgo = new Date(Date.now() - 25 * 60 * 60 * 1000);
         
@@ -60,6 +64,10 @@ export const GET: RequestHandler = async () => {
         }
 
         if (!rawData || rawData.length === 0) {
+            // Fallback to live data if no database data
+            const fallbackSignatures = currentLiveData?.signatureCount || 0;
+            const fallbackGoal = currentLiveData?.goal || 1500000;
+            
             return new Response(JSON.stringify({
                 secRate: 0,
                 minRate: 0,
@@ -69,8 +77,8 @@ export const GET: RequestHandler = async () => {
                 totalToday: 0,
                 timeToGoal: 'No data',
                 activityLevel: 'None',
-                currentSignatures: 0,
-                goal: 1500000
+                currentSignatures: fallbackSignatures,
+                goal: fallbackGoal
             }), {
                 headers: { 'Content-Type': 'application/json' }
             });
@@ -82,12 +90,16 @@ export const GET: RequestHandler = async () => {
             goal: applyGoalOverride({ goal: item.goal }).goal
         }));
 
-        // Get current signature count and goal from latest entry
-        const latestEntry = data[data.length - 1];
-        const currentSignatures = latestEntry.signature_count;
-        const goal = latestEntry.goal;
+        // Get current signature count and goal from latest entry OR live data (whichever is newer)
+        const latestDbEntry = data[data.length - 1];
+        const currentSignatures = currentLiveData?.signatureCount && currentLiveData.signatureCount >= latestDbEntry.signature_count 
+            ? currentLiveData.signatureCount 
+            : latestDbEntry.signature_count;
+        const goal = currentLiveData?.goal || latestDbEntry.goal;
 
-        // Calculate sliding window rates
+        console.log(`📊 Stats calculation - DB: ${latestDbEntry.signature_count}, Live: ${currentLiveData?.signatureCount}, Using: ${currentSignatures}`);
+
+        // Calculate sliding window rates (using database data for historical analysis)
         const secRate = calculateSlidingWindowRate(data, 30 * 1000); // 30 seconds
         const minRate = calculateSlidingWindowRate(data, 5 * 60 * 1000) * 60; // 5 minutes, per minute
         const hourlyRate = calculateSlidingWindowRate(data, 60 * 60 * 1000) * 3600; // 1 hour, per hour
