@@ -74,7 +74,7 @@ function simulateData() {
     if (!liveData) {
         liveData = {
             signatureCount: signatureCount,
-            goal: 1000000
+            goal: 1500000
         };
         lastUpdated = new Date();
     }
